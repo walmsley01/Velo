@@ -70,7 +70,7 @@
             background:var(--glass)!important;backdrop-filter:blur(8px)!important;
             border-radius:6px!important;font-size:10px!important;color:var(--t3)!important}
         .leaflet-control-attribution a{color:var(--t3)!important}
-        .leaflet-tile-pane{filter:saturate(2.2) contrast(1.25) brightness(0.95)}
+        .leaflet-tile-pane{filter:contrast(1.05) brightness(0.98)}
 
         /* ── Top bar ── */
         #topbar{position:absolute;top:12px;left:12px;right:12px;z-index:150;
@@ -354,7 +354,7 @@
             <div class="field">
                 <label>Start location</label>
                 <div class="input-row">
-                    <input type="text" id="start-input" placeholder="e.g. London Bridge, Clapham Common…">
+                    <input type="text" id="start-input" placeholder="Type address, or tap map to drop pin…">
                     <button class="btn btn-ghost" id="gps-btn" style="width:42px;flex-shrink:0;padding:0">
                         <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7.5" cy="7.5" r="6.5"/><circle cx="7.5" cy="7.5" r="2"/><path d="M7.5 1v2M7.5 12v2M1 7.5h2M12 7.5h2"/></svg>
                     </button>
@@ -472,9 +472,9 @@ document.getElementById('theme-btn').addEventListener('click', () => applyTheme(
 function initMap() {
     S.map = L.map('map', { center:[51.4214,-0.2040], zoom:14, zoomControl:false });
 
-    S.lightTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-        attribution:'© <a href="https://carto.com/attributions">CARTO</a> © <a href="https://openstreetmap.org">OSM</a>',
-        subdomains:'abcd', maxZoom:20
+    S.lightTiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution:'© <a href="https://openstreetmap.org">OpenStreetMap</a> contributors',
+        maxZoom:19
     });
     S.darkTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
         attribution:'© <a href="https://carto.com/attributions">CARTO</a> © <a href="https://openstreetmap.org">OSM</a>',
@@ -483,7 +483,11 @@ function initMap() {
 
     (S.dark ? S.darkTiles : S.lightTiles).addTo(S.map);
     L.control.zoom({ position:'topleft' }).addTo(S.map);
-    S.map.on('click', e => { if (activeTab() === 'waypoints') addWaypoint(e.latlng); });
+    S.map.on('click', e => {
+        const tab = activeTab();
+        if (tab === 'waypoints') addWaypoint(e.latlng);
+        else if (tab === 'plan') setStartFromMap(e.latlng);
+    });
     document.getElementById('fab-locate').style.top = '106px';
 }
 
@@ -648,14 +652,46 @@ function clearRoute() {
 }
 
 /* ── Geocode ── */
+function parseCoords(text) {
+    const m = text.trim().match(/^(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)$/);
+    if (m) return [parseFloat(m[2]), parseFloat(m[1])]; // [lng, lat]
+    return null;
+}
+
 async function geocode(text) {
     if (!S.orsKey) { toast('Add your ORS API key in Settings'); return null; }
+    const direct = parseCoords(text);
+    if (direct) return direct;
     const res = await fetch(`https://api.openrouteservice.org/geocode/search?api_key=${encodeURIComponent(S.orsKey)}&text=${encodeURIComponent(text)}&boundary.country=GB&size=1`).catch(()=>null);
     if (!res) { toast('Geocode request failed'); return null; }
     const data = await res.json();
     const feat = data.features?.[0];
     if (!feat) { toast(`Not found: "${text}"`); return null; }
     return feat.geometry.coordinates;
+}
+
+async function reverseGeocode(lat, lng) {
+    if (!S.orsKey) return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    const res = await fetch(`https://api.openrouteservice.org/geocode/reverse?api_key=${encodeURIComponent(S.orsKey)}&point.lon=${lng}&point.lat=${lat}&size=1`).catch(()=>null);
+    if (!res) return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    const data = await res.json().catch(()=>null);
+    return data?.features?.[0]?.properties?.label || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+}
+
+let S_startMarker = null;
+async function setStartFromMap(latlng) {
+    if (S_startMarker) S_startMarker.remove();
+    S_startMarker = L.marker(latlng, {
+        icon: L.divIcon({
+            className:'',
+            html:`<div style="width:28px;height:28px;background:#10B981;border:2.5px solid white;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:Inter,sans-serif;font-size:10px;font-weight:700;color:white;box-shadow:0 2px 10px rgba(16,185,129,0.4),0 1px 4px rgba(0,0,0,0.15)">S</div>`,
+            iconSize:[28,28], iconAnchor:[14,14]
+        })
+    }).addTo(S.map);
+    document.getElementById('start-input').value = 'Pinned location…';
+    const label = await reverseGeocode(latlng.lat, latlng.lng);
+    document.getElementById('start-input').value = label;
+    toast('Start location set — tap Generate route');
 }
 
 /* ── Geometry ── */
@@ -801,7 +837,13 @@ document.getElementById('fab-locate').addEventListener('click',()=>{
 
 document.getElementById('gps-btn').addEventListener('click',()=>{
     navigator.geolocation?.getCurrentPosition(
-        p=>{ document.getElementById('start-input').value=`${p.coords.latitude.toFixed(5)}, ${p.coords.longitude.toFixed(5)}`; toast('Using current location'); },
+        async p=>{
+            const { latitude:lat, longitude:lng } = p.coords;
+            document.getElementById('start-input').value = 'Getting location…';
+            const label = await reverseGeocode(lat, lng);
+            document.getElementById('start-input').value = label;
+            toast('Using current location');
+        },
         ()=>toast('Location unavailable')
     );
 });
@@ -811,7 +853,7 @@ document.getElementById('start-input').addEventListener('keydown',e=>{ if(e.key=
 
 document.getElementById('gpx-btn').addEventListener('click',exportGPX);
 document.getElementById('save-route-btn').addEventListener('click',saveRoute);
-document.getElementById('clear-route-btn').addEventListener('click',()=>{ clearRoute(); clearAll(); });
+document.getElementById('clear-route-btn').addEventListener('click',()=>{ clearRoute(); clearAll(); if(S_startMarker){S_startMarker.remove();S_startMarker=null;} });
 
 document.getElementById('saved-btn').addEventListener('click',()=>{ renderSaved(); document.getElementById('saved-overlay').classList.add('open'); });
 document.getElementById('saved-close').addEventListener('click',closeSaved);
