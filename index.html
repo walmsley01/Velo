@@ -626,9 +626,11 @@ async function callORS(body) {
 
 function addArrows(coords) {
     const step = Math.max(1, Math.floor(coords.length / 14));
+    // Local tangent lookahead: just 1-2 coords ahead so direction follows the actual road curve
+    const look = Math.max(1, Math.min(3, Math.floor(step / 4)));
     for (let i = 0; i < coords.length - step; i += step) {
         const [lng1, lat1] = coords[i];
-        const [lng2, lat2] = coords[Math.min(i + step, coords.length - 1)];
+        const [lng2, lat2] = coords[Math.min(i + look, coords.length - 1)];
         const r = Math.atan2(lng2 - lng1, lat2 - lat1);
         const cos = Math.cos(r), sin = Math.sin(r);
         // Rotate points around tip (0,0) → maps to SVG center [11,11] via iconAnchor
