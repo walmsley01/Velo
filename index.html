@@ -58,6 +58,7 @@
 
         /* ── Map ── */
         #map{position:absolute;inset:0;z-index:1}
+        .route-arrow{background:none!important;border:none!important;box-shadow:none!important}
         .leaflet-control-zoom{
             border:0.5px solid var(--border2)!important;
             border-radius:var(--r)!important;
@@ -70,7 +71,7 @@
             background:var(--glass)!important;backdrop-filter:blur(8px)!important;
             border-radius:6px!important;font-size:10px!important;color:var(--t3)!important}
         .leaflet-control-attribution a{color:var(--t3)!important}
-        .leaflet-tile-pane{filter:contrast(1.05) brightness(0.98)}
+        .leaflet-tile-pane{filter:saturate(1.5) contrast(1.08) brightness(0.97)}
 
         /* ── Top bar ── */
         #topbar{position:absolute;top:12px;left:12px;right:12px;z-index:150;
@@ -391,6 +392,7 @@
             <div id="sub-landmark" style="display:none">
                 <div class="field"><label>Landmark or address</label><input type="text" id="landmark-input" placeholder="e.g. Box Hill, Windsor Castle"></div>
                 <div class="field"><label>Route type</label><select id="landmark-type"><option value="one-way">One way</option><option value="there-back">There &amp; back</option><option value="loop">Loop (different roads back)</option></select></div>
+                <div class="field" id="loop-dist-wrap" style="display:none"><label>Target total distance (km)</label><input type="number" id="landmark-loop-dist" value="60" min="1" max="300"></div>
             </div>
 
             <div id="sub-loop" style="display:none">
@@ -611,17 +613,18 @@ async function callORS(body) {
 }
 
 function addArrows(coords) {
-    const step = Math.max(1, Math.floor(coords.length / 8));
+    const step = Math.max(1, Math.floor(coords.length / 7));
     for (let i = step; i < coords.length - 1; i += step) {
-        const [lng1, lat1] = coords[i - 1];
-        const [lng2, lat2] = coords[i];
+        const [lng1, lat1] = coords[i];
+        const [lng2, lat2] = coords[Math.min(i + Math.ceil(step / 2), coords.length - 1)];
         const angle = Math.atan2(lng2 - lng1, lat2 - lat1) * 180 / Math.PI;
-        const el = L.divIcon({
-            className:'',
-            html:`<div style="width:16px;height:16px;display:flex;align-items:center;justify-content:center;transform:rotate(${angle}deg)"><svg width="10" height="12" viewBox="0 0 10 12" fill="#10B981"><path d="M5 0L10 12H0Z"/></svg></div>`,
-            iconSize:[16,16], iconAnchor:[8,8]
+        const icon = L.divIcon({
+            className: 'route-arrow',
+            html: `<svg width="16" height="16" viewBox="0 0 16 16" style="transform:rotate(${angle}deg);display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.25))"><polygon points="8,1 15,15 8,11 1,15" fill="#10B981"/></svg>`,
+            iconSize: [16, 16],
+            iconAnchor: [8, 8]
         });
-        S.arrowMarkers.push(L.marker([lat2, lng2], { icon:el, interactive:false }).addTo(S.map));
+        S.arrowMarkers.push(L.marker([lat1, lng1], { icon, interactive: false, keyboard: false }).addTo(S.map));
     }
 }
 
@@ -751,10 +754,16 @@ async function generateRoute() {
         } else if (type==='there-back') {
             await callORS({ coordinates:[sc,lc,sc], elevation:true });
         } else {
-            // Loop: force a different return road by offsetting a midpoint perpendicular to outbound bearing
+            // Loop: route to landmark, then return via a perpendicular detour scaled to target distance
+            const targetKm = parseFloat(document.getElementById('landmark-loop-dist').value) || 60;
             const dLng=lc[0]-sc[0], dLat=lc[1]-sc[1];
-            const dist=Math.sqrt(dLng*dLng+dLat*dLat);
-            const perp=[sc[0]+dLng*0.5-dLat*0.3/dist, sc[1]+dLat*0.5+dLng*0.3/dist];
+            const directDeg=Math.sqrt(dLng*dLng+dLat*dLat);
+            // 1 degree ≈ 111km; scale detour so total route approximates target distance
+            const onewayKm = directDeg * 111;
+            const extraKm = Math.max(0, targetKm - onewayKm * 2);
+            const detourScale = (onewayKm * 0.3 + extraKm * 0.15) / 111;
+            const norm = directDeg || 1;
+            const perp = [sc[0]+dLng*0.5 - (dLat/norm)*detourScale, sc[1]+dLat*0.5 + (dLng/norm)*detourScale];
             await callORS({ coordinates:[sc,lc,perp,sc], elevation:true });
         }
     }
@@ -874,6 +883,10 @@ document.getElementById('gps-btn').addEventListener('click',()=>{
         },
         ()=>toast('Location unavailable')
     );
+});
+
+document.getElementById('landmark-type').addEventListener('change', e => {
+    document.getElementById('loop-dist-wrap').style.display = e.target.value === 'loop' ? '' : 'none';
 });
 
 document.getElementById('generate-btn').addEventListener('click',generateRoute);
