@@ -334,9 +334,15 @@
     <div id="sheet-body">
 
         <div class="pane active" id="pane-waypoints">
+            <div class="input-row" style="margin-bottom:10px">
+                <input type="text" id="wp-search" placeholder="Search for a place…" style="flex:1">
+                <button class="btn btn-ghost" id="wp-search-btn" style="width:42px;flex-shrink:0;padding:0">
+                    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="6.5" cy="6.5" r="5"/><path d="M11 11l3 3"/></svg>
+                </button>
+            </div>
             <div id="wp-hint">
                 <svg id="wp-hint-ico" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 1.5C5.5 1.5 3.5 3.5 3.5 6c0 3.7 4.5 8.5 4.5 8.5s4.5-4.8 4.5-8.5c0-2.5-2-4.5-4.5-4.5z"/><circle cx="8" cy="6" r="1.5"/></svg>
-                <p>Tap the map to drop waypoints. The route follows cycling roads automatically.</p>
+                <p>Search above to jump to a location, then tap the map to drop waypoints.</p>
             </div>
             <ul id="wp-list"></ul>
             <div class="btn-row">
@@ -613,16 +619,16 @@ async function callORS(body) {
 }
 
 function addArrows(coords) {
-    const step = Math.max(1, Math.floor(coords.length / 7));
+    const step = Math.max(1, Math.floor(coords.length / 14));
     for (let i = step; i < coords.length - 1; i += step) {
         const [lng1, lat1] = coords[i];
         const [lng2, lat2] = coords[Math.min(i + Math.ceil(step / 2), coords.length - 1)];
         const angle = Math.atan2(lng2 - lng1, lat2 - lat1) * 180 / Math.PI;
         const icon = L.divIcon({
             className: 'route-arrow',
-            html: `<svg width="16" height="16" viewBox="0 0 16 16" style="transform:rotate(${angle}deg);display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.25))"><polygon points="8,1 15,15 8,11 1,15" fill="#10B981"/></svg>`,
-            iconSize: [16, 16],
-            iconAnchor: [8, 8]
+            html: `<svg width="22" height="22" viewBox="0 0 22 22" style="transform:rotate(${angle}deg);display:block"><polygon points="11,2 20,20 11,15 2,20" fill="white" stroke="#059669" stroke-width="2" stroke-linejoin="round" filter="url(#ds)"/><defs><filter id="ds" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="1" stdDeviation="1.5" flood-color="rgba(0,0,0,0.35)"/></filter></defs></svg>`,
+            iconSize: [22, 22],
+            iconAnchor: [11, 11]
         });
         S.arrowMarkers.push(L.marker([lat1, lng1], { icon, interactive: false, keyboard: false }).addTo(S.map));
     }
@@ -650,6 +656,7 @@ function showRoute(geojson) {
     addArrows(coords);
     document.getElementById('elev-wrap').innerHTML = buildElev(coords);
     document.getElementById('route-card').classList.add('visible');
+    S._collapse?.();
 }
 
 function buildElev(coords) {
@@ -865,12 +872,33 @@ document.querySelectorAll('.dir-btn[data-dir]').forEach(b=>b.addEventListener('c
     S.selDir=b.dataset.dir;
 }));
 
+let S_locDot = null;
 document.getElementById('fab-locate').addEventListener('click',()=>{
-    navigator.geolocation?.getCurrentPosition(
-        p=>{ S.map.setView([p.coords.latitude,p.coords.longitude],14); toast('Centred on your location'); },
-        ()=>toast('Location unavailable — check browser permissions')
-    );
+    navigator.geolocation?.getCurrentPosition(p=>{
+        const { latitude:lat, longitude:lng } = p.coords;
+        S.map.setView([lat, lng], 15);
+        if (S_locDot) S_locDot.remove();
+        S_locDot = L.marker([lat, lng], { icon: L.divIcon({
+            className:'route-arrow',
+            html:`<div style="width:18px;height:18px;border-radius:50%;background:#3B82F6;border:3px solid white;box-shadow:0 0 0 3px rgba(59,130,246,0.35),0 2px 8px rgba(0,0,0,0.25)"></div>`,
+            iconSize:[18,18], iconAnchor:[9,9]
+        }), interactive:false, keyboard:false }).addTo(S.map);
+        toast('Showing your location');
+    }, ()=>toast('Location unavailable — check browser permissions'));
 });
+
+async function wpSearch() {
+    const txt = document.getElementById('wp-search').value.trim();
+    if (!txt) return;
+    if (!S.orsKey) { toast('Add your ORS API key in Settings'); return; }
+    const coords = await geocode(txt);
+    if (!coords) return;
+    S.map.setView([coords[1], coords[0]], 15);
+    document.getElementById('wp-search').value = '';
+    S._collapse?.();
+}
+document.getElementById('wp-search-btn').addEventListener('click', wpSearch);
+document.getElementById('wp-search').addEventListener('keydown', e=>{ if(e.key==='Enter') wpSearch(); });
 
 document.getElementById('gps-btn').addEventListener('click',()=>{
     navigator.geolocation?.getCurrentPosition(
