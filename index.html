@@ -58,7 +58,10 @@
 
         /* ── Map ── */
         #map{position:absolute;inset:0;z-index:1}
-        .route-arrow{background:none!important;border:none!important;box-shadow:none!important}
+        .route-arrow,.loc-dot-icon{background:none!important;border:none!important;box-shadow:none!important}
+        .ac-item{padding:10px 12px;cursor:pointer;font-size:13px;border-bottom:0.5px solid var(--border);color:var(--text);line-height:1.3}
+        .ac-item:last-child{border-bottom:none}
+        .ac-item:hover,.ac-item:active{background:var(--s2)}
         .leaflet-control-zoom{
             border:0.5px solid var(--border2)!important;
             border-radius:var(--r)!important;
@@ -334,11 +337,14 @@
     <div id="sheet-body">
 
         <div class="pane active" id="pane-waypoints">
-            <div class="input-row" style="margin-bottom:10px">
-                <input type="text" id="wp-search" placeholder="Search for a place…" style="flex:1">
-                <button class="btn btn-ghost" id="wp-search-btn" style="width:42px;flex-shrink:0;padding:0">
-                    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="6.5" cy="6.5" r="5"/><path d="M11 11l3 3"/></svg>
-                </button>
+            <div style="position:relative;margin-bottom:10px">
+                <div class="input-row">
+                    <input type="text" id="wp-search" placeholder="Search for a place…" autocomplete="off" style="flex:1">
+                    <button class="btn btn-ghost" id="wp-locate-btn" style="width:42px;flex-shrink:0;padding:0" title="Use my location">
+                        <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7.5" cy="7.5" r="6.5"/><circle cx="7.5" cy="7.5" r="2"/><path d="M7.5 1v2M7.5 12v2M1 7.5h2M12 7.5h2"/></svg>
+                    </button>
+                </div>
+                <div id="wp-autocomplete" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--surface);border:0.5px solid var(--border2);border-radius:var(--r);box-shadow:var(--sh-lg);z-index:500;overflow:hidden"></div>
             </div>
             <div id="wp-hint">
                 <svg id="wp-hint-ico" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 1.5C5.5 1.5 3.5 3.5 3.5 6c0 3.7 4.5 8.5 4.5 8.5s4.5-4.8 4.5-8.5c0-2.5-2-4.5-4.5-4.5z"/><circle cx="8" cy="6" r="1.5"/></svg>
@@ -620,15 +626,16 @@ async function callORS(body) {
 
 function addArrows(coords) {
     const step = Math.max(1, Math.floor(coords.length / 14));
-    for (let i = step; i < coords.length - 1; i += step) {
+    for (let i = 0; i < coords.length - step; i += step) {
         const [lng1, lat1] = coords[i];
-        const [lng2, lat2] = coords[Math.min(i + Math.ceil(step / 2), coords.length - 1)];
+        const [lng2, lat2] = coords[Math.min(i + step, coords.length - 1)];
         const angle = Math.atan2(lng2 - lng1, lat2 - lat1) * 180 / Math.PI;
+        // tip at SVG (11,3); rotate around tip; iconAnchor pins tip to route coordinate
         const icon = L.divIcon({
             className: 'route-arrow',
-            html: `<svg width="22" height="22" viewBox="0 0 22 22" style="transform:rotate(${angle}deg);display:block"><polygon points="11,2 20,20 11,15 2,20" fill="white" stroke="#059669" stroke-width="2" stroke-linejoin="round" filter="url(#ds)"/><defs><filter id="ds" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="1" stdDeviation="1.5" flood-color="rgba(0,0,0,0.35)"/></filter></defs></svg>`,
+            html: `<svg width="22" height="22" viewBox="0 0 22 22" overflow="visible" style="transform:rotate(${angle}deg);transform-origin:11px 3px;display:block"><polygon points="11,3 19,21 11,15 3,21" fill="rgba(0,0,0,0.18)" stroke="none" transform="translate(0,2)"/><polygon points="11,3 19,21 11,15 3,21" fill="white" stroke="#059669" stroke-width="2.5" stroke-linejoin="round"/></svg>`,
             iconSize: [22, 22],
-            iconAnchor: [11, 11]
+            iconAnchor: [11, 3]
         });
         S.arrowMarkers.push(L.marker([lat1, lng1], { icon, interactive: false, keyboard: false }).addTo(S.map));
     }
@@ -873,32 +880,66 @@ document.querySelectorAll('.dir-btn[data-dir]').forEach(b=>b.addEventListener('c
 }));
 
 let S_locDot = null;
+function showLocDot(lat, lng) {
+    if (S_locDot) S_locDot.remove();
+    S_locDot = L.marker([lat, lng], { icon: L.divIcon({
+        className: 'loc-dot-icon',
+        html: `<div style="width:16px;height:16px;border-radius:50%;background:#3B82F6;border:3px solid white;box-shadow:0 0 0 4px rgba(59,130,246,0.3),0 2px 8px rgba(0,0,0,0.3)"></div>`,
+        iconSize:[16,16], iconAnchor:[8,8]
+    }), interactive:false, keyboard:false, zIndexOffset:1000 }).addTo(S.map);
+}
+
 document.getElementById('fab-locate').addEventListener('click',()=>{
     navigator.geolocation?.getCurrentPosition(p=>{
         const { latitude:lat, longitude:lng } = p.coords;
         S.map.setView([lat, lng], 15);
-        if (S_locDot) S_locDot.remove();
-        S_locDot = L.marker([lat, lng], { icon: L.divIcon({
-            className:'route-arrow',
-            html:`<div style="width:18px;height:18px;border-radius:50%;background:#3B82F6;border:3px solid white;box-shadow:0 0 0 3px rgba(59,130,246,0.35),0 2px 8px rgba(0,0,0,0.25)"></div>`,
-            iconSize:[18,18], iconAnchor:[9,9]
-        }), interactive:false, keyboard:false }).addTo(S.map);
+        showLocDot(lat, lng);
         toast('Showing your location');
     }, ()=>toast('Location unavailable — check browser permissions'));
 });
 
-async function wpSearch() {
-    const txt = document.getElementById('wp-search').value.trim();
-    if (!txt) return;
-    if (!S.orsKey) { toast('Add your ORS API key in Settings'); return; }
-    const coords = await geocode(txt);
-    if (!coords) return;
-    S.map.setView([coords[1], coords[0]], 15);
-    document.getElementById('wp-search').value = '';
-    S._collapse?.();
-}
-document.getElementById('wp-search-btn').addEventListener('click', wpSearch);
-document.getElementById('wp-search').addEventListener('keydown', e=>{ if(e.key==='Enter') wpSearch(); });
+document.getElementById('wp-locate-btn').addEventListener('click',()=>{
+    navigator.geolocation?.getCurrentPosition(p=>{
+        const { latitude:lat, longitude:lng } = p.coords;
+        S.map.setView([lat, lng], 15);
+        showLocDot(lat, lng);
+        S._collapse?.();
+        toast('Showing your location');
+    }, ()=>toast('Location unavailable — check browser permissions'));
+});
+
+/* ── Waypoint autocomplete ── */
+let _acTimer = null;
+document.getElementById('wp-search').addEventListener('input', e => {
+    clearTimeout(_acTimer);
+    const txt = e.target.value.trim();
+    const drop = document.getElementById('wp-autocomplete');
+    if (txt.length < 2) { drop.style.display='none'; return; }
+    _acTimer = setTimeout(async () => {
+        if (!S.orsKey) return;
+        const res = await fetch(`https://api.openrouteservice.org/geocode/autocomplete?api_key=${encodeURIComponent(S.orsKey)}&text=${encodeURIComponent(txt)}&boundary.country=GB&size=6`).catch(()=>null);
+        if (!res) return;
+        const data = await res.json().catch(()=>null);
+        const feats = data?.features || [];
+        if (!feats.length) { drop.style.display='none'; return; }
+        drop.innerHTML = feats.map((f,i) => `<div class="ac-item" data-i="${i}">${esc(f.properties.label)}</div>`).join('');
+        drop.style.display = '';
+        drop.querySelectorAll('.ac-item').forEach(el => {
+            el.addEventListener('mousedown', ev => { ev.preventDefault(); });
+            el.addEventListener('click', () => {
+                const f = feats[parseInt(el.dataset.i)];
+                const [lng, lat] = f.geometry.coordinates;
+                S.map.setView([lat, lng], 15);
+                document.getElementById('wp-search').value = '';
+                drop.style.display = 'none';
+                S._collapse?.();
+            });
+        });
+    }, 250);
+});
+document.getElementById('wp-search').addEventListener('blur', () => {
+    setTimeout(()=>{ document.getElementById('wp-autocomplete').style.display='none'; }, 150);
+});
 
 document.getElementById('gps-btn').addEventListener('click',()=>{
     navigator.geolocation?.getCurrentPosition(
