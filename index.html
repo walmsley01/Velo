@@ -629,13 +629,19 @@ function addArrows(coords) {
     for (let i = 0; i < coords.length - step; i += step) {
         const [lng1, lat1] = coords[i];
         const [lng2, lat2] = coords[Math.min(i + step, coords.length - 1)];
-        const angle = Math.atan2(lng2 - lng1, lat2 - lat1) * 180 / Math.PI;
-        // tip at SVG (11,3); rotate around tip; iconAnchor pins tip to route coordinate
+        const r = Math.atan2(lng2 - lng1, lat2 - lat1);
+        const cos = Math.cos(r), sin = Math.sin(r);
+        // Rotate points around tip (0,0) → maps to SVG center [11,11] via iconAnchor
+        // Formula: x'=11+x*cos-y*sin, y'=11+x*sin+y*cos (screen-space, y-down)
+        // Tip at (0,0), body extends backward: left(-7,11), notch(0,7), right(7,11)
+        const pt = (x, y) => `${(11+x*cos-y*sin).toFixed(1)},${(11+x*sin+y*cos).toFixed(1)}`;
+        const pts  = `${pt(0,0)} ${pt(-7,11)} ${pt(0,7)} ${pt(7,11)}`;
+        const shad = `${pt(0,1.5)} ${pt(-7,12.5)} ${pt(0,8.5)} ${pt(7,12.5)}`;
         const icon = L.divIcon({
             className: 'route-arrow',
-            html: `<svg width="22" height="22" viewBox="0 0 22 22" overflow="visible" style="transform:rotate(${angle}deg);transform-origin:11px 3px;display:block"><polygon points="11,3 19,21 11,15 3,21" fill="rgba(0,0,0,0.18)" stroke="none" transform="translate(0,2)"/><polygon points="11,3 19,21 11,15 3,21" fill="white" stroke="#059669" stroke-width="2.5" stroke-linejoin="round"/></svg>`,
+            html: `<svg width="22" height="22" viewBox="0 0 22 22" overflow="visible" style="display:block"><polygon points="${shad}" fill="rgba(0,0,0,0.22)" stroke="none"/><polygon points="${pts}" fill="white" stroke="#059669" stroke-width="2.5" stroke-linejoin="round"/></svg>`,
             iconSize: [22, 22],
-            iconAnchor: [11, 3]
+            iconAnchor: [11, 11]
         });
         S.arrowMarkers.push(L.marker([lat1, lng1], { icon, interactive: false, keyboard: false }).addTo(S.map));
     }
@@ -882,63 +888,76 @@ document.querySelectorAll('.dir-btn[data-dir]').forEach(b=>b.addEventListener('c
 let S_locDot = null;
 function showLocDot(lat, lng) {
     if (S_locDot) S_locDot.remove();
-    S_locDot = L.marker([lat, lng], { icon: L.divIcon({
-        className: 'loc-dot-icon',
-        html: `<div style="width:16px;height:16px;border-radius:50%;background:#3B82F6;border:3px solid white;box-shadow:0 0 0 4px rgba(59,130,246,0.3),0 2px 8px rgba(0,0,0,0.3)"></div>`,
-        iconSize:[16,16], iconAnchor:[8,8]
-    }), interactive:false, keyboard:false, zIndexOffset:1000 }).addTo(S.map);
+    S_locDot = L.marker([lat, lng], {
+        icon: L.divIcon({
+            className: 'loc-dot-icon',
+            html: `<div style="width:18px;height:18px;border-radius:50%;background:#2563EB;border:3px solid white;box-shadow:0 0 0 5px rgba(37,99,235,0.28),0 2px 10px rgba(0,0,0,0.35)"></div>`,
+            iconSize: [18,18], iconAnchor: [9,9]
+        }),
+        interactive: false, keyboard: false, zIndexOffset: 2000
+    }).addTo(S.map);
 }
 
-document.getElementById('fab-locate').addEventListener('click',()=>{
-    navigator.geolocation?.getCurrentPosition(p=>{
-        const { latitude:lat, longitude:lng } = p.coords;
+function getLocation(onSuccess, onFail) {
+    if (!navigator.geolocation) { toast('Geolocation not supported'); onFail?.(); return; }
+    toast('Getting location…');
+    navigator.geolocation.getCurrentPosition(
+        p => onSuccess(p.coords.latitude, p.coords.longitude),
+        err => { toast('Location unavailable — check browser permissions'); onFail?.(); },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+    );
+}
+
+document.getElementById('fab-locate').addEventListener('click', () => {
+    getLocation((lat, lng) => {
         S.map.setView([lat, lng], 15);
         showLocDot(lat, lng);
         toast('Showing your location');
-    }, ()=>toast('Location unavailable — check browser permissions'));
+    });
 });
 
-document.getElementById('wp-locate-btn').addEventListener('click',()=>{
-    navigator.geolocation?.getCurrentPosition(p=>{
-        const { latitude:lat, longitude:lng } = p.coords;
+document.getElementById('wp-locate-btn').addEventListener('click', () => {
+    getLocation((lat, lng) => {
         S.map.setView([lat, lng], 15);
         showLocDot(lat, lng);
+        addWaypoint({ lat, lng });
         S._collapse?.();
-        toast('Showing your location');
-    }, ()=>toast('Location unavailable — check browser permissions'));
+        toast('Location found — waypoint dropped');
+    });
 });
 
-/* ── Waypoint autocomplete ── */
+/* ── Waypoint search (Nominatim — no key needed) ── */
 let _acTimer = null;
 document.getElementById('wp-search').addEventListener('input', e => {
     clearTimeout(_acTimer);
     const txt = e.target.value.trim();
     const drop = document.getElementById('wp-autocomplete');
-    if (txt.length < 2) { drop.style.display='none'; return; }
+    if (txt.length < 2) { drop.style.display = 'none'; return; }
     _acTimer = setTimeout(async () => {
-        if (!S.orsKey) return;
-        const res = await fetch(`https://api.openrouteservice.org/geocode/autocomplete?api_key=${encodeURIComponent(S.orsKey)}&text=${encodeURIComponent(txt)}&boundary.country=GB&size=6`).catch(()=>null);
-        if (!res) return;
-        const data = await res.json().catch(()=>null);
-        const feats = data?.features || [];
-        if (!feats.length) { drop.style.display='none'; return; }
-        drop.innerHTML = feats.map((f,i) => `<div class="ac-item" data-i="${i}">${esc(f.properties.label)}</div>`).join('');
+        const res = await fetch(
+            `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(txt)}&format=json&limit=6&countrycodes=gb`,
+            { headers: { 'Accept-Language': 'en' } }
+        ).catch(() => null);
+        const results = await res?.json().catch(() => null) || [];
+        if (!results.length) { drop.style.display = 'none'; return; }
+        drop.innerHTML = results.map((r, i) =>
+            `<div class="ac-item" data-i="${i}">${esc(r.display_name)}</div>`
+        ).join('');
         drop.style.display = '';
         drop.querySelectorAll('.ac-item').forEach(el => {
-            el.addEventListener('mousedown', ev => { ev.preventDefault(); });
+            el.addEventListener('mousedown', ev => ev.preventDefault());
             el.addEventListener('click', () => {
-                const f = feats[parseInt(el.dataset.i)];
-                const [lng, lat] = f.geometry.coordinates;
-                S.map.setView([lat, lng], 15);
+                const r = results[parseInt(el.dataset.i)];
+                S.map.flyTo([parseFloat(r.lat), parseFloat(r.lon)], 15);
                 document.getElementById('wp-search').value = '';
                 drop.style.display = 'none';
                 S._collapse?.();
             });
         });
-    }, 250);
+    }, 350);
 });
 document.getElementById('wp-search').addEventListener('blur', () => {
-    setTimeout(()=>{ document.getElementById('wp-autocomplete').style.display='none'; }, 150);
+    setTimeout(() => { document.getElementById('wp-autocomplete').style.display = 'none'; }, 200);
 });
 
 document.getElementById('gps-btn').addEventListener('click',()=>{
