@@ -472,13 +472,14 @@ document.getElementById('theme-btn').addEventListener('click', () => applyTheme(
 function initMap() {
     S.map = L.map('map', { center:[51.4214,-0.2040], zoom:14, zoomControl:false });
 
-    S.lightTiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution:'© <a href="https://openstreetmap.org">OpenStreetMap</a> contributors',
-        maxZoom:19
+    const stadiaKey = '03324fd6-5e9a-4caf-b8bc-a987a6c53f1c';
+    S.lightTiles = L.tileLayer(`https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png?api_key=${stadiaKey}`, {
+        attribution:'© <a href="https://stadiamaps.com">Stadia Maps</a> © <a href="https://openstreetmap.org">OpenStreetMap</a>',
+        maxZoom:20
     });
-    S.darkTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution:'© <a href="https://carto.com/attributions">CARTO</a> © <a href="https://openstreetmap.org">OSM</a>',
-        subdomains:'abcd', maxZoom:20
+    S.darkTiles = L.tileLayer(`https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png?api_key=${stadiaKey}`, {
+        attribution:'© <a href="https://stadiamaps.com">Stadia Maps</a> © <a href="https://openstreetmap.org">OpenStreetMap</a>',
+        maxZoom:20
     });
 
     (S.dark ? S.darkTiles : S.lightTiles).addTo(S.map);
