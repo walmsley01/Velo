@@ -601,11 +601,40 @@ function clearAll() {
 
 /* ── ORS routing ── */
 async function routeWaypoints() {
-    await callORS({ coordinates: S.waypoints.map(wp=>[wp.lng,wp.lat]), elevation:true });
+    if (S.orsKey) {
+        await callORS({ coordinates: S.waypoints.map(wp=>[wp.lng,wp.lat]), elevation:true });
+    } else {
+        await callOSRM(S.waypoints.map(wp=>[wp.lng,wp.lat]));
+    }
+}
+
+async function callOSRM(coords) {
+    setLoading(true);
+    try {
+        const coordStr = coords.map(([lng,lat])=>`${lng},${lat}`).join(';');
+        const res = await fetch(`https://router.project-osrm.org/route/v1/cycling/${coordStr}?overview=full&geometries=geojson`);
+        if (!res.ok) throw new Error(`OSRM ${res.status}`);
+        const data = await res.json();
+        const route = data.routes?.[0];
+        if (!route) throw new Error('No route found');
+        const geojson = {
+            features: [{
+                type: 'Feature',
+                geometry: route.geometry,
+                properties: { summary: { distance: route.distance, duration: route.duration, ascent: 0 } }
+            }]
+        };
+        S.currentGeoJSON = geojson;
+        showRoute(geojson);
+    } catch(e) {
+        toast('Routing error: ' + e.message);
+    } finally {
+        setLoading(false);
+    }
 }
 
 async function callORS(body) {
-    if (!S.orsKey) { toast('Add your ORS API key in Settings'); return; }
+    if (!S.orsKey) { toast('Add your ORS API key in Settings ⚙'); return; }
     setLoading(true);
     try {
         const res = await fetch('https://api.openrouteservice.org/v2/directions/cycling-road/geojson', {
@@ -970,16 +999,15 @@ document.getElementById('wp-search').addEventListener('blur', () => {
 });
 
 document.getElementById('gps-btn').addEventListener('click',()=>{
-    navigator.geolocation?.getCurrentPosition(
-        async p=>{
-            const { latitude:lat, longitude:lng } = p.coords;
-            document.getElementById('start-input').value = 'Getting location…';
-            const label = await reverseGeocode(lat, lng);
-            document.getElementById('start-input').value = label;
-            toast('Using current location');
-        },
-        ()=>toast('Location unavailable')
-    );
+    getLocation(async (lat, lng) => {
+        S.map.setView([lat, lng], 15);
+        showLocDot(lat, lng);
+        document.getElementById('start-input').value = 'Getting location…';
+        const label = await reverseGeocode(lat, lng);
+        document.getElementById('start-input').value = label;
+        S._startCoord = [lng, lat];
+        toast('Using current location');
+    });
 });
 
 document.getElementById('landmark-type').addEventListener('change', e => {
@@ -1015,7 +1043,7 @@ initTheme();
 initMap();
 requestAnimationFrame(()=>initSheet());
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
-if (!S.orsKey) setTimeout(()=>toast('Tap ⚙ Settings to add your free ORS API key'),1000);
+if (!S.orsKey) setTimeout(()=>toast('Basic routing works without a key. Add an ORS key in ⚙ for Plan Route features.'),2000);
 </script>
 </body>
 </html>
