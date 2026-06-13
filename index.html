@@ -396,7 +396,7 @@
                     </div>
                 </div>
                 <div class="col2">
-                    <div class="field"><label>Distance (mi)</label><input type="number" id="dir-dist" value="30" min="1" max="200"></div>
+                    <div class="field"><label>Distance (km)</label><input type="number" id="dir-dist" value="50" min="1" max="300"></div>
                     <div class="field"><label>Route type</label><select id="dir-type"><option value="one-way">One way</option><option value="loop">Out &amp; back</option></select></div>
                 </div>
             </div>
@@ -409,7 +409,7 @@
 
             <div id="sub-loop" style="display:none">
                 <div class="col2">
-                    <div class="field"><label>Distance (mi)</label><input type="number" id="loop-dist" value="40" min="5" max="200"></div>
+                    <div class="field"><label>Distance (km)</label><input type="number" id="loop-dist" value="60" min="5" max="300"></div>
                     <div class="field"><label>Variation (0–5)</label><input type="number" id="loop-seed" value="0" min="0" max="5"></div>
                 </div>
                 <p style="font-size:12px;color:var(--t3);margin-bottom:10px">Change variation to get different loop shapes from the same start.</p>
@@ -626,22 +626,22 @@ async function callORS(body) {
 
 function addArrows(coords) {
     const step = Math.max(1, Math.floor(coords.length / 14));
-    // Local tangent lookahead: just 1-2 coords ahead so direction follows the actual road curve
-    const look = Math.max(1, Math.min(3, Math.floor(step / 4)));
+    const look = Math.max(1, Math.min(4, Math.floor(step / 3)));
     for (let i = 0; i < coords.length - step; i += step) {
         const [lng1, lat1] = coords[i];
         const [lng2, lat2] = coords[Math.min(i + look, coords.length - 1)];
         const r = Math.atan2(lng2 - lng1, lat2 - lat1);
         const cos = Math.cos(r), sin = Math.sin(r);
-        // Rotate points around tip (0,0) → maps to SVG center [11,11] via iconAnchor
-        // Formula: x'=11+x*cos-y*sin, y'=11+x*sin+y*cos (screen-space, y-down)
-        // Tip at (0,0), body extends backward: left(-7,11), notch(0,7), right(7,11)
-        const pt = (x, y) => `${(11+x*cos-y*sin).toFixed(1)},${(11+x*sin+y*cos).toFixed(1)}`;
-        const pts  = `${pt(0,0)} ${pt(-7,11)} ${pt(0,7)} ${pt(7,11)}`;
-        const shad = `${pt(0,1.5)} ${pt(-7,12.5)} ${pt(0,8.5)} ${pt(7,12.5)}`;
+        // Simple open chevron: two lines meeting at tip (11,11)
+        // Arm endpoints are backward-left and backward-right from the tip
+        const arm = (x, y) => `${(11 + x*cos - y*sin).toFixed(1)},${(11 + x*sin + y*cos).toFixed(1)}`;
+        const L1 = arm(-7, 10), R1 = arm(7, 10);
         const icon = L.divIcon({
             className: 'route-arrow',
-            html: `<svg width="22" height="22" viewBox="0 0 22 22" overflow="visible" style="display:block"><polygon points="${shad}" fill="rgba(0,0,0,0.22)" stroke="none"/><polygon points="${pts}" fill="white" stroke="#059669" stroke-width="2.5" stroke-linejoin="round"/></svg>`,
+            html: `<svg width="22" height="22" viewBox="0 0 22 22" overflow="visible" style="display:block">
+                <polyline points="${L1} 11,11 ${R1}" fill="none" stroke="rgba(0,0,0,0.35)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+                <polyline points="${L1} 11,11 ${R1}" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>`,
             iconSize: [22, 22],
             iconAnchor: [11, 11]
         });
@@ -659,8 +659,13 @@ function showRoute(geojson) {
     const feat = geojson.features?.[0];
     const sum  = feat?.properties?.summary;
     if (sum) {
-        document.getElementById('s-dist').textContent = (sum.distance/1609.34).toFixed(1)+' mi';
-        document.getElementById('s-elev').textContent = Math.round(sum.ascent||0)+' m';
+        document.getElementById('s-dist').textContent = (sum.distance/1000).toFixed(1)+' km';
+        const ascent = coords.reduce((acc, c, i) => {
+            if (i === 0 || c.length < 3 || coords[i-1].length < 3) return acc;
+            const diff = c[2] - coords[i-1][2];
+            return diff > 0 ? acc + diff : acc;
+        }, 0);
+        document.getElementById('s-elev').textContent = Math.round(ascent)+' m';
         const m = Math.round(sum.duration/60);
         document.getElementById('s-time').textContent = m>=60?`${Math.floor(m/60)}h ${m%60}m`:`${m}m`;
     }
@@ -757,13 +762,13 @@ async function generateRoute() {
     if (!sc) { setLoading(false); return; }
 
     if (S.planMode==='loop') {
-        const mi=parseFloat(document.getElementById('loop-dist').value)||40;
+        const mi=parseFloat(document.getElementById('loop-dist').value)||60;
         const seed=parseInt(document.getElementById('loop-seed').value)||0;
-        await callORS({ coordinates:[sc], options:{ round_trip:{ length:mi*1609.34, points:5, seed } }, elevation:true });
+        await callORS({ coordinates:[sc], options:{ round_trip:{ length:mi*1000, points:5, seed } }, elevation:true });
     } else if (S.planMode==='direction') {
-        const mi=parseFloat(document.getElementById('dir-dist').value)||30;
+        const mi=parseFloat(document.getElementById('dir-dist').value)||50;
         const loop=document.getElementById('dir-type').value==='loop';
-        const bear=DIR[S.selDir]; const dm=mi*1609.34;
+        const bear=DIR[S.selDir]; const dm=mi*1000;
         if (loop) { const mid=dest(sc[1],sc[0],bear,dm*0.45); await callORS({ coordinates:[sc,mid,sc], elevation:true }); }
         else       { const end=dest(sc[1],sc[0],bear,dm);     await callORS({ coordinates:[sc,end], elevation:true }); }
     } else {
@@ -814,7 +819,7 @@ function saveRoute() {
     if (!name) return;
     const sum=S.currentGeoJSON.features?.[0]?.properties?.summary;
     const routes=getSaved();
-    routes.unshift({ id:Date.now(), name, date:new Date().toISOString(), miles:sum?(sum.distance/1609.34).toFixed(1):'?', geojson:S.currentGeoJSON });
+    routes.unshift({ id:Date.now(), name, date:new Date().toISOString(), km:sum?(sum.distance/1000).toFixed(1):'?', geojson:S.currentGeoJSON });
     localStorage.setItem('saved_routes',JSON.stringify(routes.slice(0,50)));
     toast(`"${name}" saved`);
 }
@@ -836,7 +841,7 @@ function renderSaved() {
     document.getElementById('saved-list').innerHTML=routes.map(r=>`
         <li class="sv-item">
             <div class="sv-ico"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 13V3a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v10l-5-3z"/></svg></div>
-            <div class="sv-info"><div class="sv-name">${esc(r.name)}</div><div class="sv-meta">${r.miles} mi · ${new Date(r.date).toLocaleDateString('en-GB')}</div></div>
+            <div class="sv-info"><div class="sv-name">${esc(r.name)}</div><div class="sv-meta">${r.km} km · ${new Date(r.date).toLocaleDateString('en-GB')}</div></div>
             <div class="sv-acts">
                 <button class="sv-load" onclick="loadRoute(${r.id})">Load</button>
                 <button class="sv-del" onclick="deleteRoute(${r.id})"><svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1 1l9 9M10 1L1 10"/></svg></button>
