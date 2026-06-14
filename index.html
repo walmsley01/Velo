@@ -426,11 +426,7 @@
     <div class="modal">
         <div class="m-handle"></div>
         <p class="m-title">Settings</p>
-        <div class="field">
-            <label>OpenRouteService API key</label>
-            <input type="text" id="key-input" placeholder="Paste your free ORS API key">
-            <p style="font-size:12px;color:var(--t3);margin-top:6px">Free key at <strong style="color:var(--brand)">openrouteservice.org</strong> → Dashboard → API Keys. 2,000 requests/day.</p>
-        </div>
+        <p style="font-size:13px;color:var(--t2);margin-bottom:16px">Routing is built in — no API key needed.</p>
         <div class="btn-row" style="margin-top:4px">
             <button class="btn btn-ghost" id="settings-cancel">Cancel</button>
             <button class="btn btn-primary" style="margin-top:0" id="settings-save">Save</button>
@@ -456,7 +452,6 @@
 const S = {
     map:null, lightTiles:null, darkTiles:null,
     waypoints:[], markers:[], routeLayer:null, arrowMarkers:[], currentGeoJSON:null,
-    orsKey: localStorage.getItem('ors_key') || '',
     planMode:'direction', selDir:'SE',
     dark: false, sheetExpanded: false, loading: false,
 };
@@ -599,31 +594,68 @@ function clearAll() {
     renderWpList(); clearRoute();
 }
 
-/* ── ORS routing ── */
-async function routeWaypoints() {
-    if (S.orsKey) {
-        await callORS({ coordinates: S.waypoints.map(wp=>[wp.lng,wp.lat]), elevation:true });
-    } else {
-        await callOSRM(S.waypoints.map(wp=>[wp.lng,wp.lat]));
+/* ── Valhalla routing (via Stadia Maps) ── */
+const STADIA_KEY = '03324fd6-5e9a-4caf-b8bc-a987a6c53f1c';
+const VALHALLA = `https://valhalla.routing.stadiamaps.com`;
+
+function decodePolyline(str) {
+    let lat = 0, lng = 0, i = 0;
+    const coords = [];
+    while (i < str.length) {
+        let b, shift = 0, result = 0;
+        do { b = str.charCodeAt(i++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+        lat += (result & 1) ? ~(result >> 1) : result >> 1;
+        shift = 0; result = 0;
+        do { b = str.charCodeAt(i++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+        lng += (result & 1) ? ~(result >> 1) : result >> 1;
+        coords.push([lng / 1e6, lat / 1e6]);
     }
+    return coords;
 }
 
-async function callOSRM(coords) {
+function valhallaToGeojson(trip) {
+    const allCoords = [];
+    const allElevs = [];
+    for (const leg of trip.legs) {
+        const pts = decodePolyline(leg.shape);
+        const elevs = leg.elevation || [];
+        pts.forEach((pt, i) => {
+            const e = elevs.length > 1 ? elevs[Math.round(i / (pts.length - 1) * (elevs.length - 1))] : null;
+            allCoords.push(e != null ? [pt[0], pt[1], e] : pt);
+        });
+        allElevs.push(...elevs);
+    }
+    const distM = trip.summary.length * 1000;
+    const duration = trip.summary.time;
+    const ascent = allElevs.reduce((acc, e, i) => i === 0 ? acc : Math.max(0, e - allElevs[i-1]) + acc, 0);
+    return {
+        features: [{
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates: allCoords },
+            properties: { summary: { distance: distM, duration, ascent } }
+        }]
+    };
+}
+
+async function callValhalla(locations, extra = {}) {
     setLoading(true);
     try {
-        const coordStr = coords.map(([lng,lat])=>`${lng},${lat}`).join(';');
-        const res = await fetch(`https://router.project-osrm.org/route/v1/cycling/${coordStr}?overview=full&geometries=geojson`);
-        if (!res.ok) throw new Error(`OSRM ${res.status}`);
-        const data = await res.json();
-        const route = data.routes?.[0];
-        if (!route) throw new Error('No route found');
-        const geojson = {
-            features: [{
-                type: 'Feature',
-                geometry: route.geometry,
-                properties: { summary: { distance: route.distance, duration: route.duration, ascent: 0 } }
-            }]
+        const body = {
+            locations: locations.map(([lng, lat]) => ({ lon: lng, lat, type: 'break' })),
+            costing: 'bicycle',
+            costing_options: { bicycle: { bicycle_type: 'Road', use_roads: 0.9, use_hills: 0.4 } },
+            elevation_interval: 25,
+            directions_options: { units: 'km' },
+            ...extra
         };
+        const res = await fetch(`${VALHALLA}/route?api_key=${STADIA_KEY}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.error || `API ${res.status}`); }
+        const data = await res.json();
+        const geojson = valhallaToGeojson(data.trip);
         S.currentGeoJSON = geojson;
         showRoute(geojson);
     } catch(e) {
@@ -633,24 +665,8 @@ async function callOSRM(coords) {
     }
 }
 
-async function callORS(body) {
-    if (!S.orsKey) { toast('Add your ORS API key in Settings ⚙'); return; }
-    setLoading(true);
-    try {
-        const res = await fetch('https://api.openrouteservice.org/v2/directions/cycling-road/geojson', {
-            method:'POST',
-            headers:{ 'Authorization':S.orsKey, 'Content-Type':'application/json' },
-            body: JSON.stringify(body)
-        });
-        if (!res.ok) { const e=await res.json().catch(()=>({})); throw new Error(e.error?.message||`API ${res.status}`); }
-        const data = await res.json();
-        S.currentGeoJSON = data;
-        showRoute(data);
-    } catch(e) {
-        toast('Routing error: ' + e.message);
-    } finally {
-        setLoading(false);
-    }
+async function routeWaypoints() {
+    await callValhalla(S.waypoints.map(wp => [wp.lng, wp.lat]));
 }
 
 function addArrows(coords) {
@@ -730,31 +746,27 @@ function clearRoute() {
     document.getElementById('route-card').classList.remove('visible');
 }
 
-/* ── Geocode ── */
+/* ── Geocode (Nominatim — no key needed) ── */
 function parseCoords(text) {
     const m = text.trim().match(/^(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)$/);
-    if (m) return [parseFloat(m[2]), parseFloat(m[1])]; // [lng, lat]
+    if (m) return [parseFloat(m[2]), parseFloat(m[1])];
     return null;
 }
 
 async function geocode(text) {
-    if (!S.orsKey) { toast('Add your ORS API key in Settings'); return null; }
     const direct = parseCoords(text);
     if (direct) return direct;
-    const res = await fetch(`https://api.openrouteservice.org/geocode/search?api_key=${encodeURIComponent(S.orsKey)}&text=${encodeURIComponent(text)}&boundary.country=GB&size=1`).catch(()=>null);
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(text)}&format=json&limit=1&countrycodes=gb`, { headers:{'Accept-Language':'en'} }).catch(()=>null);
     if (!res) { toast('Geocode request failed'); return null; }
     const data = await res.json();
-    const feat = data.features?.[0];
-    if (!feat) { toast(`Not found: "${text}"`); return null; }
-    return feat.geometry.coordinates;
+    if (!data?.[0]) { toast(`Not found: "${text}"`); return null; }
+    return [parseFloat(data[0].lon), parseFloat(data[0].lat)];
 }
 
 async function reverseGeocode(lat, lng) {
-    if (!S.orsKey) return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
-    const res = await fetch(`https://api.openrouteservice.org/geocode/reverse?api_key=${encodeURIComponent(S.orsKey)}&point.lon=${lng}&point.lat=${lat}&size=1`).catch(()=>null);
-    if (!res) return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
-    const data = await res.json().catch(()=>null);
-    return data?.features?.[0]?.properties?.label || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`, { headers:{'Accept-Language':'en'} }).catch(()=>null);
+    const data = await res?.json().catch(()=>null);
+    return data?.display_name?.split(',').slice(0,3).join(',') || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
 }
 
 let S_startMarker = null;
@@ -785,7 +797,6 @@ function dest(lat,lng,deg,dist) {
 
 /* ── Generate route ── */
 async function generateRoute() {
-    if (!S.orsKey) { toast('Add your ORS API key in Settings'); return; }
     const txt = document.getElementById('start-input').value.trim();
     if (!txt) { toast('Enter a start location'); return; }
     setLoading(true);
@@ -793,36 +804,45 @@ async function generateRoute() {
     if (!sc) { setLoading(false); return; }
 
     if (S.planMode==='loop') {
-        const mi=parseFloat(document.getElementById('loop-dist').value)||60;
-        const seed=parseInt(document.getElementById('loop-seed').value)||0;
-        await callORS({ coordinates:[sc], options:{ round_trip:{ length:mi*1000, points:5, seed } }, elevation:true });
+        const km = parseFloat(document.getElementById('loop-dist').value)||60;
+        const seed = parseInt(document.getElementById('loop-seed').value)||0;
+        // Build a rough loop by placing waypoints in a circle around the start
+        const r = (km / (2 * Math.PI)) * 1000; // radius in metres
+        const pts = [0, 1, 2, 3].map(i => {
+            const angle = (seed * 37 + i * 90) * Math.PI / 180;
+            return dest(sc[1], sc[0], (seed * 37 + i * 90) % 360, r * 0.85);
+        });
+        await callValhalla([sc, pts[0], pts[1], pts[2], pts[3], sc]);
     } else if (S.planMode==='direction') {
-        const mi=parseFloat(document.getElementById('dir-dist').value)||50;
-        const loop=document.getElementById('dir-type').value==='loop';
-        const bear=DIR[S.selDir]; const dm=mi*1000;
-        if (loop) { const mid=dest(sc[1],sc[0],bear,dm*0.45); await callORS({ coordinates:[sc,mid,sc], elevation:true }); }
-        else       { const end=dest(sc[1],sc[0],bear,dm);     await callORS({ coordinates:[sc,end], elevation:true }); }
-    } else {
-        const lmt=document.getElementById('landmark-input').value.trim();
-        if (!lmt) { toast('Enter a landmark or address'); setLoading(false); return; }
-        const lc=await geocode(lmt); if (!lc) { setLoading(false); return; }
-        const type=document.getElementById('landmark-type').value;
-        if (type==='one-way') {
-            await callORS({ coordinates:[sc,lc], elevation:true });
-        } else if (type==='there-back') {
-            await callORS({ coordinates:[sc,lc,sc], elevation:true });
+        const km = parseFloat(document.getElementById('dir-dist').value)||50;
+        const loop = document.getElementById('dir-type').value==='loop';
+        const bear = DIR[S.selDir];
+        const end = dest(sc[1], sc[0], bear, km * 1000);
+        if (loop) {
+            const perp = dest(sc[1], sc[0], (bear + 90) % 360, km * 300);
+            await callValhalla([sc, end, perp, sc]);
         } else {
-            // Loop: route to landmark, then return via a perpendicular detour scaled to target distance
+            await callValhalla([sc, end]);
+        }
+    } else {
+        const lmt = document.getElementById('landmark-input').value.trim();
+        if (!lmt) { toast('Enter a landmark or address'); setLoading(false); return; }
+        const lc = await geocode(lmt); if (!lc) { setLoading(false); return; }
+        const type = document.getElementById('landmark-type').value;
+        if (type==='one-way') {
+            await callValhalla([sc, lc]);
+        } else if (type==='there-back') {
+            await callValhalla([sc, lc, sc]);
+        } else {
             const targetKm = parseFloat(document.getElementById('landmark-loop-dist').value) || 60;
             const dLng=lc[0]-sc[0], dLat=lc[1]-sc[1];
-            const directDeg=Math.sqrt(dLng*dLng+dLat*dLat);
-            // 1 degree ≈ 111km; scale detour so total route approximates target distance
+            const directDeg = Math.sqrt(dLng*dLng+dLat*dLat);
             const onewayKm = directDeg * 111;
             const extraKm = Math.max(0, targetKm - onewayKm * 2);
             const detourScale = (onewayKm * 0.3 + extraKm * 0.15) / 111;
             const norm = directDeg || 1;
-            const perp = [sc[0]+dLng*0.5 - (dLat/norm)*detourScale, sc[1]+dLat*0.5 + (dLng/norm)*detourScale];
-            await callORS({ coordinates:[sc,lc,perp,sc], elevation:true });
+            const perp = [sc[0]+dLng*0.5-(dLat/norm)*detourScale, sc[1]+dLat*0.5+(dLng/norm)*detourScale];
+            await callValhalla([sc, lc, perp, sc]);
         }
     }
 }
@@ -1026,15 +1046,11 @@ document.getElementById('saved-close').addEventListener('click',closeSaved);
 document.getElementById('saved-overlay').addEventListener('click',e=>{ if(e.target===document.getElementById('saved-overlay')) closeSaved(); });
 
 document.getElementById('settings-btn').addEventListener('click',()=>{
-    document.getElementById('key-input').value=S.orsKey;
     document.getElementById('settings-overlay').classList.add('open');
 });
 document.getElementById('settings-cancel').addEventListener('click',()=>document.getElementById('settings-overlay').classList.remove('open'));
 document.getElementById('settings-save').addEventListener('click',()=>{
-    S.orsKey=document.getElementById('key-input').value.trim();
-    localStorage.setItem('ors_key',S.orsKey);
     document.getElementById('settings-overlay').classList.remove('open');
-    toast('API key saved');
 });
 document.getElementById('settings-overlay').addEventListener('click',e=>{ if(e.target===document.getElementById('settings-overlay')) document.getElementById('settings-overlay').classList.remove('open'); });
 
@@ -1043,7 +1059,6 @@ initTheme();
 initMap();
 requestAnimationFrame(()=>initSheet());
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
-if (!S.orsKey) setTimeout(()=>toast('Basic routing works without a key. Add an ORS key in ⚙ for Plan Route features.'),2000);
 </script>
 </body>
 </html>
