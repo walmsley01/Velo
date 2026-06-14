@@ -127,6 +127,19 @@
         .elev-km{position:absolute;bottom:0;font-size:10px;color:var(--t3);transform:translateX(-50%);pointer-events:none}
         .elev-yl{position:absolute;left:0;font-size:10px;color:var(--t3);pointer-events:none;line-height:1}
         .grad-pill{font-size:10px;white-space:nowrap}
+        #climbs-wrap{border-top:0.5px solid var(--border)}
+        #climbs-toggle{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;cursor:pointer;user-select:none}
+        #climbs-toggle span{font-size:12px;font-weight:600;color:var(--t3);text-transform:uppercase;letter-spacing:0.5px}
+        #climbs-chevron{transition:transform 0.2s;color:var(--t3)}
+        #climbs-chevron.open{transform:rotate(180deg)}
+        #climbs-list{display:none;padding:0 14px 10px}
+        #climbs-list.open{display:block}
+        .climb-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:0.5px solid var(--border)}
+        .climb-row:last-child{border-bottom:none}
+        .climb-num{width:18px;height:18px;border-radius:50%;background:var(--s2);font-size:10px;font-weight:700;color:var(--t2);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+        .climb-info{flex:1;display:flex;flex-direction:column;gap:1px}
+        .climb-main{font-size:13px;font-weight:600;color:var(--text)}
+        .climb-sub{font-size:11px;color:var(--t3)}
 
         #card-actions{display:flex;align-items:center;gap:7px;
             padding:10px 12px 14px;border-top:0.5px solid var(--border)}
@@ -338,6 +351,13 @@
         <div class="stat"><span class="stat-v" id="s-time">—</span><span class="stat-l">Est. time</span></div>
     </div>
     <div id="elev-wrap"></div>
+    <div id="climbs-wrap" style="display:none">
+        <div id="climbs-toggle">
+            <span>Climbs</span>
+            <svg id="climbs-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 5l4 4 4-4"/></svg>
+        </div>
+        <div id="climbs-list"></div>
+    </div>
     <div id="card-actions">
         <button class="ca-btn accent" id="gpx-btn">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M7 1.5v8M4.5 7L7 9.5 9.5 7"/><path d="M1.5 10.5v1a1.5 1.5 0 0 0 1.5 1.5h7a1.5 1.5 0 0 0 1.5-1.5v-1"/></svg>
@@ -775,6 +795,17 @@ function showRoute(geojson) {
     document.getElementById('elev-wrap').innerHTML = buildElev(coords);
     initElevInteraction(coords);
 
+    // Climbs list
+    const climbs = detectClimbs(coords);
+    const climbsWrap = document.getElementById('climbs-wrap');
+    const climbsList = document.getElementById('climbs-list');
+    if (climbs.length) {
+        climbsList.innerHTML = buildClimbsList(climbs);
+        climbsWrap.style.display = '';
+    } else {
+        climbsWrap.style.display = 'none';
+    }
+
     document.getElementById('route-card').classList.add('visible');
     S._collapse?.();
 
@@ -811,24 +842,34 @@ function buildElev(coords) {
         cumKm.push(totalKm);
     }
 
-    const PAD_T=4, PAD_B=2;
+    const PAD_T=6, PAD_B=2;
     const xOf = i => (cumKm[i]/totalKm*W).toFixed(2);
     const yOf = e => (H - PAD_B - ((e-mn)/rng)*(H-PAD_T-PAD_B)).toFixed(2);
 
-    // Per-segment: gradient-coloured fill rect + line
-    let fills='', lines='';
-    eles.slice(1).forEach((e,i) => {
-        const hDist = (cumKm[i+1]-cumKm[i])*1000;
-        const rise  = e - eles[i];
-        const grad  = hDist > 0 ? (rise/hDist)*100 : 0;
-        const col   = gradColor(grad);
-        const x1=xOf(i), x2=xOf(i+1);
-        const y1=yOf(eles[i]), y2=yOf(e);
-        const yTop  = Math.min(parseFloat(y1), parseFloat(y2));
-        const yBot  = H - PAD_B;
-        fills += `<rect x="${x1}" y="${yTop.toFixed(2)}" width="${(parseFloat(x2)-parseFloat(x1)).toFixed(2)}" height="${(yBot-yTop).toFixed(2)}" fill="${col}" opacity="0.18"/>`;
-        lines += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="1.8" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
-    });
+    // Single clean profile line + fill — no barcode
+    const pts = eles.map((_,i)=>`${xOf(i)},${yOf(eles[i])}`);
+    const area = 'M'+pts.join(' L');
+
+    // Smoothed gradient blocks: group into ~500m chunks and colour by avg gradient
+    // This gives a clean banded look instead of per-point noise
+    const chunkKm = Math.max(totalKm/40, 0.3);
+    let gradBands='';
+    let chunkStart=0;
+    while(chunkStart < totalKm) {
+        const chunkEnd = Math.min(chunkStart+chunkKm, totalKm);
+        // find indices in range
+        const iA = cumKm.findIndex(k=>k>=chunkStart)||0;
+        let iB = cumKm.findIndex(k=>k>=chunkEnd); if(iB<0) iB=eles.length-1;
+        if(iB<=iA){chunkStart=chunkEnd;continue;}
+        const hDist=(cumKm[iB]-cumKm[iA])*1000;
+        const rise=eles[iB]-eles[iA];
+        const grad=hDist>0?(rise/hDist)*100:0;
+        const col=gradColor(grad);
+        const x1=parseFloat(xOf(iA)), x2=parseFloat(xOf(iB));
+        const yTop=Math.min(...eles.slice(iA,iB+1).map(e=>parseFloat(yOf(e))));
+        gradBands+=`<rect x="${x1.toFixed(2)}" y="${yTop.toFixed(2)}" width="${(x2-x1).toFixed(2)}" height="${(H-PAD_B-yTop).toFixed(2)}" fill="${col}" opacity="0.15"/>`;
+        chunkStart=chunkEnd;
+    }
 
     // km scale labels
     const interval = totalKm<=20?5:totalKm<=60?10:totalKm<=120?20:50;
@@ -837,25 +878,20 @@ function buildElev(coords) {
         kmLabels+=`<span class="elev-km" style="left:${(km/totalKm*100).toFixed(1)}%">${km}km</span>`;
     }
 
-    // y-axis min/max labels — offset right so they don't overlap the line
-    const ylTop  = `<span class="elev-yl" style="top:2px">${Math.round(mx)}m</span>`;
-    const ylBot  = `<span class="elev-yl" style="bottom:20px">${Math.round(mn)}m</span>`;
+    // y-axis min/max labels
+    const ylTop = `<span class="elev-yl" style="top:2px">${Math.round(mx)}m</span>`;
+    const ylBot = `<span class="elev-yl" style="bottom:20px">${Math.round(mn)}m</span>`;
 
     return `<div id="elev-label"></div><div id="elev-dot-overlay"></div>${ylTop}${ylBot}
     <svg id="elev-svg" viewBox="0 0 100 ${H}" preserveAspectRatio="none"
         style="width:100%;height:100px;display:block;cursor:crosshair;touch-action:none">
-        ${fills}
-        ${lines}
+        ${gradBands}
+        <path d="${area} L${xOf(eles.length-1)},${H-PAD_B} L0,${H-PAD_B} Z" fill="rgba(16,185,129,0.06)"/>
+        <path d="${area}" stroke="#10B981" stroke-width="1.8" fill="none" vector-effect="non-scaling-stroke"/>
         <line x1="0" y1="${H-PAD_B}" x2="100" y2="${H-PAD_B}" stroke="var(--border)" stroke-width="0.5" vector-effect="non-scaling-stroke"/>
         <line id="elev-vline" x1="0" y1="0" x2="0" y2="${H}" stroke="rgba(0,0,0,0.2)" stroke-width="0.5" opacity="0" vector-effect="non-scaling-stroke"/>
     </svg>
-    <div style="position:relative;height:16px">${kmLabels}</div>
-    <div style="display:flex;gap:10px;padding:4px 0 2px">
-        <span class="grad-pill" style="color:#10B981">● &lt;3%</span>
-        <span class="grad-pill" style="color:#f59e0b">● 3–6%</span>
-        <span class="grad-pill" style="color:#f97316">● 6–10%</span>
-        <span class="grad-pill" style="color:#ef4444">● 10%+</span>
-    </div>`;
+    <div style="position:relative;height:16px">${kmLabels}</div>`;
 }
 
 function initElevInteraction(coords) {
@@ -903,7 +939,9 @@ function initElevInteraction(coords) {
         dot.style.top = dotTopPct+'%';
         label.style.display = '';
         label.style.left = (pct*100)+'%';
-        label.textContent = Math.round(ele)+'m' + (Math.abs(grad)>0.5 ? ' · '+Math.round(grad)+'%' : '');
+        const kmStr = targetKm.toFixed(1)+'km';
+        const gradStr = Math.abs(grad)>0.5 ? ' · '+Math.round(grad)+'% grade' : '';
+        label.textContent = kmStr + '  ' + Math.round(ele)+'m'+gradStr;
         const c = coords[cIdx];
         if (c && S.map) {
             const ll = [c[1],c[0]];
@@ -929,6 +967,101 @@ function clearRoute(clearLandmark = true) {
     S.currentGeoJSON = null;
     S.routeCoords = [];
     document.getElementById('route-card').classList.remove('visible');
+    document.getElementById('climbs-wrap').style.display = 'none';
+    document.getElementById('climbs-list').classList.remove('open');
+    document.getElementById('climbs-chevron').classList.remove('open');
+}
+
+/* ── Climb detection ── */
+function detectClimbs(coords) {
+    const eles = coords.map(c=>c[2]).filter(e=>typeof e==='number');
+    if (eles.length < 4) return [];
+
+    // Build cumKm
+    let totalKm=0;
+    const cumKm=[0];
+    for(let i=1;i<coords.length;i++){
+        const dLat=(coords[i][1]-coords[i-1][1])*111320;
+        const dLng=(coords[i][0]-coords[i-1][0])*111320*Math.cos(coords[i-1][1]*Math.PI/180);
+        totalKm+=Math.sqrt(dLat*dLat+dLng*dLng)/1000;
+        cumKm.push(totalKm);
+    }
+
+    // Smooth elevation with a rolling window to reduce GPS noise
+    const W=5;
+    const sm=eles.map((e,i)=>{
+        let s=0,c=0;
+        for(let j=Math.max(0,i-W);j<=Math.min(eles.length-1,i+W);j++){s+=eles[j];c++;}
+        return s/c;
+    });
+
+    // Find climbs: uphill stretches with >20m gain and >0.5km length
+    const MIN_GAIN=20, MIN_LEN=0.5;
+    const climbs=[];
+    let inClimb=false, startIdx=0;
+
+    for(let i=1;i<sm.length;i++){
+        if(!inClimb){
+            if(sm[i]>sm[i-1]) { inClimb=true; startIdx=i-1; }
+        } else {
+            // Allow brief descents (up to 10m drop) before ending a climb
+            const drop=sm[startIdx+(i-startIdx>>1)]-sm[i];
+            if(sm[i]<sm[i-1]-2){
+                // Climb ended — check if it qualifies
+                const gain=Math.max(...sm.slice(startIdx,i))-sm[startIdx];
+                const len=cumKm[i]-cumKm[startIdx];
+                if(gain>=MIN_GAIN && len>=MIN_LEN){
+                    const hDist=len*1000;
+                    climbs.push({
+                        startKm: cumKm[startIdx],
+                        endKm: cumKm[i],
+                        lengthKm: len,
+                        gainM: Math.round(gain),
+                        avgGrad: Math.round((gain/hDist)*100*10)/10,
+                        startEle: Math.round(sm[startIdx]),
+                        peakEle: Math.round(Math.max(...sm.slice(startIdx,i)))
+                    });
+                }
+                inClimb=false;
+            }
+        }
+    }
+    // Handle climb reaching end
+    if(inClimb){
+        const gain=Math.max(...sm.slice(startIdx))-sm[startIdx];
+        const len=cumKm[cumKm.length-1]-cumKm[startIdx];
+        if(gain>=MIN_GAIN && len>=MIN_LEN){
+            climbs.push({
+                startKm:cumKm[startIdx], endKm:totalKm, lengthKm:len,
+                gainM:Math.round(gain), avgGrad:Math.round((gain/(len*1000))*100*10)/10,
+                startEle:Math.round(sm[startIdx]), peakEle:Math.round(Math.max(...sm.slice(startIdx)))
+            });
+        }
+    }
+    // Sort biggest gain first, deduplicate overlapping
+    climbs.sort((a,b)=>b.gainM-a.gainM);
+    const deduped=[];
+    for(const c of climbs){
+        if(!deduped.some(d=>c.startKm<d.endKm && c.endKm>d.startKm)) deduped.push(c);
+    }
+    return deduped.slice(0,8);
+}
+
+function buildClimbsList(climbs) {
+    if(!climbs.length) return '';
+    const gradBadge = g => {
+        const col = g<3?'#10B981':g<6?'#f59e0b':g<10?'#f97316':'#ef4444';
+        return `<span style="display:inline-block;padding:1px 6px;border-radius:10px;font-size:11px;font-weight:700;color:white;background:${col}">${g}%</span>`;
+    };
+    return climbs.map((c,i)=>`
+        <div class="climb-row">
+            <span class="climb-num">${i+1}</span>
+            <div class="climb-info">
+                <span class="climb-main">+${c.gainM}m over ${c.lengthKm<1?(c.lengthKm*1000).toFixed(0)+'m':c.lengthKm.toFixed(1)+'km'}</span>
+                <span class="climb-sub">starts at ${c.startKm.toFixed(1)}km · peaks ${c.peakEle}m</span>
+            </div>
+            ${gradBadge(c.avgGrad)}
+        </div>`).join('');
 }
 
 /* ── Cafes ── */
@@ -1353,6 +1486,11 @@ attachAutocomplete('landmark-input','landmark-autocomplete', r=>{
     showLandmarkPin(parseFloat(r.lon),parseFloat(r.lat));
 });
 
+
+document.getElementById('climbs-toggle').addEventListener('click',()=>{
+    document.getElementById('climbs-list').classList.toggle('open');
+    document.getElementById('climbs-chevron').classList.toggle('open');
+});
 
 /* ── Boot ── */
 initTheme();
