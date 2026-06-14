@@ -689,7 +689,7 @@ function addArrows(coords) {
 }
 
 function showRoute(geojson) {
-    clearRoute();
+    clearRoute(false);
     S.routeLayer = L.geoJSON(geojson, {
         style:{ color:'#10B981', weight:4.5, opacity:0.9, lineCap:'round', lineJoin:'round' }
     }).addTo(S.map);
@@ -733,10 +733,10 @@ function buildElev(coords) {
     </svg>`;
 }
 
-function clearRoute() {
+function clearRoute(clearLandmark = true) {
     if (S.routeLayer) { S.routeLayer.remove(); S.routeLayer=null; }
     S.arrowMarkers.forEach(m=>m.remove()); S.arrowMarkers=[];
-    if (S_landmarkMarker) { S_landmarkMarker.remove(); S_landmarkMarker=null; }
+    if (clearLandmark && S_landmarkMarker) { S_landmarkMarker.remove(); S_landmarkMarker=null; }
     S.currentGeoJSON = null;
     document.getElementById('route-card').classList.remove('visible');
 }
