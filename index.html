@@ -641,7 +641,11 @@ async function callValhalla(locations, extra = {}) {
     setLoading(true);
     try {
         const body = {
-            locations: locations.map(([lng, lat]) => ({ lon: lng, lat, type: 'break' })),
+            locations: locations.map(loc =>
+                Array.isArray(loc)
+                    ? { lon: loc[0], lat: loc[1], type: 'break' }
+                    : { lon: loc[0], lat: loc[1], type: loc[2] || 'break' }
+            ),
             costing: 'bicycle',
             costing_options: { bicycle: { bicycle_type: 'Road', use_roads: 0.9, use_hills: 0.4 } },
             elevation_interval: 25,
@@ -806,21 +810,23 @@ async function generateRoute() {
     if (S.planMode==='loop') {
         const km = parseFloat(document.getElementById('loop-dist').value)||60;
         const seed = parseInt(document.getElementById('loop-seed').value)||0;
-        // Build a rough loop by placing waypoints in a circle around the start
-        const r = (km / (2 * Math.PI)) * 1000; // radius in metres
-        const pts = [0, 1, 2, 3].map(i => {
-            const angle = (seed * 37 + i * 90) * Math.PI / 180;
-            return dest(sc[1], sc[0], (seed * 37 + i * 90) % 360, r * 0.85);
-        });
-        await callValhalla([sc, pts[0], pts[1], pts[2], pts[3], sc]);
+        const r = (km / (2 * Math.PI)) * 1000;
+        const baseAngle = (seed * 37) % 360;
+        const pts = [0, 1, 2, 3].map(i =>
+            dest(sc[1], sc[0], (baseAngle + i * 90) % 360, r * 0.85)
+        );
+        // mark intermediate pts as "through" so Valhalla won't U-turn at them
+        await callValhalla([sc, [...pts[0],'through'], [...pts[1],'through'], [...pts[2],'through'], [...pts[3],'through'], sc]);
     } else if (S.planMode==='direction') {
         const km = parseFloat(document.getElementById('dir-dist').value)||50;
         const loop = document.getElementById('dir-type').value==='loop';
         const bear = DIR[S.selDir];
         const end = dest(sc[1], sc[0], bear, km * 1000);
         if (loop) {
-            const perp = dest(sc[1], sc[0], (bear + 90) % 360, km * 300);
-            await callValhalla([sc, end, perp, sc]);
+            // offset the return leg 90° to the right of the bearing
+            const mid = dest(sc[1], sc[0], bear, km * 500);
+            const ret = dest(mid[1], mid[0], (bear + 90) % 360, km * 200);
+            await callValhalla([sc, [...end,'through'], [...ret,'through'], sc]);
         } else {
             await callValhalla([sc, end]);
         }
@@ -834,15 +840,16 @@ async function generateRoute() {
         } else if (type==='there-back') {
             await callValhalla([sc, lc, sc]);
         } else {
-            const targetKm = parseFloat(document.getElementById('landmark-loop-dist').value) || 60;
-            const dLng=lc[0]-sc[0], dLat=lc[1]-sc[1];
-            const directDeg = Math.sqrt(dLng*dLng+dLat*dLat);
-            const onewayKm = directDeg * 111;
-            const extraKm = Math.max(0, targetKm - onewayKm * 2);
-            const detourScale = (onewayKm * 0.3 + extraKm * 0.15) / 111;
-            const norm = directDeg || 1;
-            const perp = [sc[0]+dLng*0.5-(dLat/norm)*detourScale, sc[1]+dLat*0.5+(dLng/norm)*detourScale];
-            await callValhalla([sc, lc, perp, sc]);
+            // Loop: place through-waypoints on opposite sides of the route axis
+            // so outbound and return use different roads
+            const dLng = lc[0]-sc[0], dLat = lc[1]-sc[1];
+            const len = Math.sqrt(dLng*dLng+dLat*dLat) || 1;
+            const perpLng = -dLat/len, perpLat = dLng/len;
+            const offset = Math.max(0.06, len * 0.45); // degrees, ~7km minimum
+            // outbound swings left, return swings right
+            const pOut = [sc[0]+dLng*0.5 - perpLng*offset, sc[1]+dLat*0.5 - perpLat*offset, 'through'];
+            const pRet = [sc[0]+dLng*0.5 + perpLng*offset, sc[1]+dLat*0.5 + perpLat*offset, 'through'];
+            await callValhalla([sc, pOut, lc, pRet, sc]);
         }
     }
 }
