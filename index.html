@@ -123,6 +123,8 @@
 
         #elev-wrap{padding:0 14px 8px;position:relative}
         #elev-label{position:absolute;top:2px;font-size:11px;font-weight:600;color:#10B981;transform:translateX(-50%);pointer-events:none;white-space:nowrap;display:none}
+        #elev-dot-overlay{position:absolute;width:10px;height:10px;border-radius:50%;background:#10B981;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.3);transform:translate(-50%,-50%);pointer-events:none;display:none}
+        .elev-km{position:absolute;bottom:0;font-size:10px;color:var(--t3);transform:translateX(-50%);pointer-events:none}
 
         #card-actions{display:flex;align-items:center;gap:7px;
             padding:10px 12px 14px;border-top:0.5px solid var(--border)}
@@ -334,13 +336,6 @@
         <div class="stat"><span class="stat-v" id="s-time">—</span><span class="stat-l">Est. time</span></div>
     </div>
     <div id="elev-wrap"></div>
-    <div id="directions-wrap" style="display:none">
-        <div id="directions-toggle">
-            <span>Directions</span>
-            <svg id="dir-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 5l4 4 4-4"/></svg>
-        </div>
-        <div id="directions-list"></div>
-    </div>
     <div id="card-actions">
         <button class="ca-btn accent" id="gpx-btn">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M7 1.5v8M4.5 7L7 9.5 9.5 7"/><path d="M1.5 10.5v1a1.5 1.5 0 0 0 1.5 1.5h7a1.5 1.5 0 0 0 1.5-1.5v-1"/></svg>
@@ -778,24 +773,6 @@ function showRoute(geojson) {
     document.getElementById('elev-wrap').innerHTML = buildElev(coords);
     initElevInteraction(coords);
 
-    // Directions list
-    const maneuvers = feat?.properties?.maneuvers || [];
-    const dirWrap = document.getElementById('directions-wrap');
-    const dirList = document.getElementById('directions-list');
-    if (maneuvers.length > 1) {
-        const arrow = t => (['↑','↑','↗','→','↘','↓','↙','←','↖','↑','↑','↑','↑','↑','↺','↻'][Math.min(t,15)]||'↑');
-        dirList.innerHTML = maneuvers.slice(0,-1).map(m =>
-            `<div class="dir-step">
-                <span class="dir-step-icon">${arrow(m.type)}</span>
-                <span class="dir-step-text">${esc(m.instruction||'')}</span>
-                <span class="dir-step-dist">${m.length<1?Math.round(m.length*1000)+'m':m.length.toFixed(1)+'km'}</span>
-            </div>`
-        ).join('');
-        dirWrap.style.display = '';
-    } else {
-        dirWrap.style.display = 'none';
-    }
-
     document.getElementById('route-card').classList.add('visible');
     S._collapse?.();
 
@@ -808,20 +785,63 @@ function showRoute(geojson) {
     }
 }
 
+function gradColor(pct) {
+    const a = Math.abs(pct);
+    if (a < 3)  return '#10B981'; // flat — green
+    if (a < 6)  return '#f59e0b'; // moderate — amber
+    if (a < 10) return '#f97316'; // steep — orange
+    return '#ef4444';             // very steep — red
+}
+
 function buildElev(coords) {
     const eles = coords.map(c=>c[2]).filter(e=>typeof e==='number');
     if (eles.length < 2) return '';
     const mn=Math.min(...eles), mx=Math.max(...eles), rng=mx-mn||1;
-    const W=100, H=40;
-    const pts = eles.map((e,i) => `${((i/(eles.length-1))*W).toFixed(2)},${(H-((e-mn)/rng)*(H-6)-3).toFixed(2)}`);
+    const W=100, H=38;
+    const chartH = H;
+
+    // Total distance in km from coords (haversine approx)
+    let totalKm = 0;
+    const cumKm = [0];
+    for (let i=1;i<coords.length;i++){
+        const dLat=(coords[i][1]-coords[i-1][1])*111320;
+        const dLng=(coords[i][0]-coords[i-1][0])*111320*Math.cos(coords[i-1][1]*Math.PI/180);
+        totalKm += Math.sqrt(dLat*dLat+dLng*dLng)/1000;
+        cumKm.push(totalKm);
+    }
+
+    const xOf = i => (cumKm[i]/totalKm*W).toFixed(2);
+    const yOf = e => (chartH - ((e-mn)/rng)*(chartH-6) - 3).toFixed(2);
+
+    // Gradient-coloured segments
+    const segs = eles.slice(1).map((e,i) => {
+        const hDist = (cumKm[i+1]-cumKm[i])*1000; // metres
+        const rise  = e - eles[i];
+        const grad  = hDist > 0 ? (rise/hDist)*100 : 0;
+        return `<line x1="${xOf(i)}" y1="${yOf(eles[i])}" x2="${xOf(i+1)}" y2="${yOf(e)}"
+            stroke="${gradColor(grad)}" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
+    }).join('');
+
+    // Fill area (subtle, single green)
+    const pts = eles.map((_,i)=>`${xOf(i)},${yOf(eles[i])}`);
     const area = 'M'+pts.join(' L');
-    return `<div id="elev-label"></div><svg id="elev-svg" viewBox="0 0 100 ${H}" preserveAspectRatio="none"
+
+    // km scale labels as HTML (crisp font, no SVG distortion)
+    const interval = totalKm<=20?5:totalKm<=60?10:totalKm<=120?20:50;
+    let kmLabels='';
+    for(let km=interval;km<totalKm;km+=interval){
+        kmLabels+=`<span class="elev-km" style="left:${(km/totalKm*100).toFixed(1)}%">${km}km</span>`;
+    }
+
+    return `<div id="elev-label"></div><div id="elev-dot-overlay"></div>
+    <svg id="elev-svg" viewBox="0 0 100 ${H}" preserveAspectRatio="none"
         style="width:100%;height:44px;display:block;cursor:crosshair;touch-action:none">
-        <path d="${area} L100,${H} L0,${H} Z" fill="rgba(16,185,129,0.10)"/>
-        <path d="${area}" stroke="#10B981" stroke-width="1.5" fill="none" vector-effect="non-scaling-stroke"/>
-        <line id="elev-vline" x1="0" y1="0" x2="0" y2="${H}" stroke="#10B981" stroke-width="0.5" opacity="0" vector-effect="non-scaling-stroke"/>
-        <circle id="elev-dot" cx="0" cy="20" r="2" fill="#10B981" opacity="0" vector-effect="non-scaling-stroke"/>
-    </svg>`;
+        <path d="${area} L${xOf(eles.length-1)},${chartH} L0,${chartH} Z" fill="rgba(16,185,129,0.08)"/>
+        ${segs}
+        <line x1="0" y1="${chartH-1}" x2="100" y2="${chartH-1}" stroke="var(--border)" stroke-width="0.5" vector-effect="non-scaling-stroke"/>
+        <line id="elev-vline" x1="0" y1="0" x2="0" y2="${chartH}" stroke="rgba(0,0,0,0.25)" stroke-width="0.5" opacity="0" vector-effect="non-scaling-stroke"/>
+    </svg>
+    <div style="position:relative;height:16px">${kmLabels}</div>`;
 }
 
 function initElevInteraction(coords) {
@@ -830,25 +850,41 @@ function initElevInteraction(coords) {
     const svg = document.getElementById('elev-svg');
     if (!svg) return;
     const vline = document.getElementById('elev-vline');
-    const dot   = document.getElementById('elev-dot');
+    const dot   = document.getElementById('elev-dot-overlay');
     const label = document.getElementById('elev-label');
     const mn=Math.min(...eles), mx=Math.max(...eles), rng=mx-mn||1;
-    const H=40;
+    const chartH=38;
     let elevMarker = null;
+
+    // Cumulative km for x positioning
+    let totalKm=0;
+    const cumKm=[0];
+    for(let i=1;i<coords.length;i++){
+        const dLat=(coords[i][1]-coords[i-1][1])*111320;
+        const dLng=(coords[i][0]-coords[i-1][0])*111320*Math.cos(coords[i-1][1]*Math.PI/180);
+        totalKm+=Math.sqrt(dLat*dLat+dLng*dLng)/1000;
+        cumKm.push(totalKm);
+    }
 
     function update(clientX) {
         const rect = svg.getBoundingClientRect();
         const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-        const idx = Math.round(pct * (eles.length-1));
-        const ele = eles[idx];
+        // Find coord index closest to this km position
+        const targetKm = pct * totalKm;
+        let cIdx=0;
+        for(let i=1;i<cumKm.length;i++){ if(cumKm[i]<=targetKm) cIdx=i; else break; }
+        const eIdx = Math.round(cIdx/(coords.length-1)*(eles.length-1));
+        const ele = eles[Math.min(eIdx,eles.length-1)];
         const x = (pct*100).toFixed(2);
-        const y = (H - ((ele-mn)/rng)*(H-6) - 3).toFixed(2);
+        const yPct = ((ele-mn)/rng);
+        const dotTopPct = ((1 - yPct) * (chartH-6) / chartH) * 100;
         vline.setAttribute('x1',x); vline.setAttribute('x2',x); vline.setAttribute('opacity','1');
-        dot.setAttribute('cx',x); dot.setAttribute('cy',y); dot.setAttribute('opacity','1');
+        dot.style.display='';
+        dot.style.left = (pct*100)+'%';
+        dot.style.top = dotTopPct.toFixed(1)+'%';
         label.style.display = '';
         label.style.left = (pct*100)+'%';
         label.textContent = Math.round(ele)+'m';
-        const cIdx = Math.round(pct*(coords.length-1));
         const c = coords[cIdx];
         if (c && S.map) {
             const ll = [c[1],c[0]];
@@ -857,7 +893,7 @@ function initElevInteraction(coords) {
         }
     }
     function hide() {
-        vline.setAttribute('opacity','0'); dot.setAttribute('opacity','0'); label.style.display='none';
+        vline.setAttribute('opacity','0'); dot.style.display='none'; label.style.display='none';
         if (elevMarker) { elevMarker.remove(); elevMarker=null; }
     }
     svg.addEventListener('pointermove', e=>{ e.preventDefault(); update(e.clientX); });
@@ -874,9 +910,6 @@ function clearRoute(clearLandmark = true) {
     S.currentGeoJSON = null;
     S.routeCoords = [];
     document.getElementById('route-card').classList.remove('visible');
-    document.getElementById('directions-wrap').style.display = 'none';
-    document.getElementById('directions-list').classList.remove('open');
-    document.getElementById('dir-chevron').classList.remove('open');
 }
 
 /* ── Cafes ── */
@@ -1301,13 +1334,6 @@ attachAutocomplete('landmark-input','landmark-autocomplete', r=>{
     showLandmarkPin(parseFloat(r.lon),parseFloat(r.lat));
 });
 
-/* ── Directions toggle ── */
-document.getElementById('directions-toggle').addEventListener('click',()=>{
-    const list=document.getElementById('directions-list');
-    const chev=document.getElementById('dir-chevron');
-    list.classList.toggle('open');
-    chev.classList.toggle('open');
-});
 
 /* ── Boot ── */
 initTheme();
