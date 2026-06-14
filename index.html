@@ -121,7 +121,8 @@
         .stat-l{font-size:10px;font-weight:600;color:var(--t3);text-transform:uppercase;letter-spacing:0.5px}
         .stat-sep{width:0.5px;height:28px;background:var(--border2);flex-shrink:0}
 
-        #elev-wrap{padding:0 14px 8px}
+        #elev-wrap{padding:0 14px 8px;position:relative}
+        #elev-label{position:absolute;top:2px;font-size:11px;font-weight:600;color:#10B981;transform:translateX(-50%);pointer-events:none;white-space:nowrap;display:none}
 
         #card-actions{display:flex;align-items:center;gap:7px;
             padding:10px 12px 14px;border-top:0.5px solid var(--border)}
@@ -442,6 +443,14 @@
             </div>
 
 
+            <div class="field" style="margin-bottom:12px">
+                <label>Terrain</label>
+                <div class="seg" id="hills-seg">
+                    <button class="seg-opt" data-hills="0.1">Flat</button>
+                    <button class="seg-opt active" data-hills="0.4">Moderate</button>
+                    <button class="seg-opt" data-hills="0.8">Hilly</button>
+                </div>
+            </div>
             <button class="btn btn-primary" id="generate-btn">Generate route</button>
         </div>
 
@@ -453,14 +462,6 @@
     <div class="modal">
         <div class="m-handle"></div>
         <p class="m-title">Settings</p>
-        <div class="setting-group">
-            <span class="setting-label">Hills</span>
-            <div class="seg" id="hills-seg">
-                <button class="seg-opt" data-hills="0.1">Flat</button>
-                <button class="seg-opt active" data-hills="0.4">Moderate</button>
-                <button class="seg-opt" data-hills="0.8">Hilly</button>
-            </div>
-        </div>
         <div class="setting-group">
             <span class="setting-label">Roads</span>
             <div class="seg" id="roads-seg">
@@ -798,9 +799,12 @@ function showRoute(geojson) {
     document.getElementById('route-card').classList.add('visible');
     S._collapse?.();
 
-    // Fetch cafes async after route is shown
-    if (S.routeLayer) {
-        fetchCafes(S.routeLayer.getBounds()).then(cafes => showCafeMarkers(cafes));
+    // Fetch cafes async after route is shown, filtered to route proximity
+    if (S.routeLayer && S.routeCoords.length) {
+        fetchCafes(S.routeLayer.getBounds()).then(cafes => {
+            const nearby = cafes.filter(c => nearRoute(c.lat, c.lng, S.routeCoords, 400));
+            showCafeMarkers(nearby);
+        });
     }
 }
 
@@ -811,13 +815,12 @@ function buildElev(coords) {
     const W=100, H=40;
     const pts = eles.map((e,i) => `${((i/(eles.length-1))*W).toFixed(2)},${(H-((e-mn)/rng)*(H-6)-3).toFixed(2)}`);
     const area = 'M'+pts.join(' L');
-    return `<svg id="elev-svg" viewBox="0 0 100 ${H}" preserveAspectRatio="none"
+    return `<div id="elev-label"></div><svg id="elev-svg" viewBox="0 0 100 ${H}" preserveAspectRatio="none"
         style="width:100%;height:44px;display:block;cursor:crosshair;touch-action:none">
         <path d="${area} L100,${H} L0,${H} Z" fill="rgba(16,185,129,0.10)"/>
         <path d="${area}" stroke="#10B981" stroke-width="1.5" fill="none" vector-effect="non-scaling-stroke"/>
         <line id="elev-vline" x1="0" y1="0" x2="0" y2="${H}" stroke="#10B981" stroke-width="0.5" opacity="0" vector-effect="non-scaling-stroke"/>
         <circle id="elev-dot" cx="0" cy="20" r="2" fill="#10B981" opacity="0" vector-effect="non-scaling-stroke"/>
-        <text id="elev-label" x="50" y="7" text-anchor="middle" fill="#10B981" font-size="5" font-weight="bold" font-family="Inter,sans-serif" opacity="0"></text>
     </svg>`;
 }
 
@@ -842,8 +845,8 @@ function initElevInteraction(coords) {
         const y = (H - ((ele-mn)/rng)*(H-6) - 3).toFixed(2);
         vline.setAttribute('x1',x); vline.setAttribute('x2',x); vline.setAttribute('opacity','1');
         dot.setAttribute('cx',x); dot.setAttribute('cy',y); dot.setAttribute('opacity','1');
-        label.setAttribute('x', Math.max(8,Math.min(92,parseFloat(x))));
-        label.setAttribute('opacity','1');
+        label.style.display = '';
+        label.style.left = (pct*100)+'%';
         label.textContent = Math.round(ele)+'m';
         const cIdx = Math.round(pct*(coords.length-1));
         const c = coords[cIdx];
@@ -854,7 +857,7 @@ function initElevInteraction(coords) {
         }
     }
     function hide() {
-        vline.setAttribute('opacity','0'); dot.setAttribute('opacity','0'); label.setAttribute('opacity','0');
+        vline.setAttribute('opacity','0'); dot.setAttribute('opacity','0'); label.style.display='none';
         if (elevMarker) { elevMarker.remove(); elevMarker=null; }
     }
     svg.addEventListener('pointermove', e=>{ e.preventDefault(); update(e.clientX); });
@@ -877,6 +880,16 @@ function clearRoute(clearLandmark = true) {
 }
 
 /* ── Cafes ── */
+function nearRoute(lat, lng, coords, thresholdM) {
+    const cosLat = Math.cos(lat * Math.PI / 180);
+    for (const c of coords) {
+        const dLat = (lat - c[1]) * 111320;
+        const dLng = (lng - c[0]) * 111320 * cosLat;
+        if (Math.sqrt(dLat*dLat + dLng*dLng) < thresholdM) return true;
+    }
+    return false;
+}
+
 async function fetchCafes(bounds) {
     const sw=bounds.getSouthWest(), ne=bounds.getNorthEast();
     const bbox=`${sw.lat.toFixed(4)},${sw.lng.toFixed(4)},${ne.lat.toFixed(4)},${ne.lng.toFixed(4)}`;
@@ -1242,11 +1255,14 @@ document.getElementById('saved-overlay').addEventListener('click',e=>{ if(e.targ
 /* ── Settings ── */
 (function(){
     function reflectSettings(){
-        const hills=localStorage.getItem('velo_hills')||'0.4';
         const roads=localStorage.getItem('velo_roads')||'0.5';
-        document.querySelectorAll('#hills-seg .seg-opt').forEach(b=>b.classList.toggle('active',b.dataset.hills===hills));
         document.querySelectorAll('#roads-seg .seg-opt').forEach(b=>b.classList.toggle('active',b.dataset.roads===roads));
     }
+    // Reflect hills into inline control on load
+    (function(){
+        const hills=localStorage.getItem('velo_hills')||'0.4';
+        document.querySelectorAll('#hills-seg .seg-opt').forEach(b=>b.classList.toggle('active',b.dataset.hills===hills));
+    })();
     document.getElementById('settings-btn').addEventListener('click',()=>{
         reflectSettings();
         document.getElementById('settings-overlay').classList.add('open');
