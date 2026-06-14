@@ -127,6 +127,10 @@
         .elev-km{position:absolute;bottom:0;font-size:10px;color:var(--t3);transform:translateX(-50%);pointer-events:none}
         .elev-yl{position:absolute;left:0;font-size:10px;color:var(--t3);pointer-events:none;line-height:1}
         .grad-pill{font-size:10px;white-space:nowrap}
+        #variant-row{display:flex;gap:6px;padding:10px 12px 0;overflow-x:auto;scrollbar-width:none}
+        #variant-row::-webkit-scrollbar{display:none}
+        .variant-pill{padding:5px 12px;border-radius:20px;font-size:12px;font-weight:600;background:var(--s2);color:var(--t2);white-space:nowrap;border:1.5px solid transparent;cursor:pointer}
+        .variant-pill.active{background:var(--brand-pale);color:var(--brand);border-color:var(--brand)}
         #climbs-wrap{border-top:0.5px solid var(--border)}
         #climbs-toggle{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;cursor:pointer;user-select:none}
         #climbs-toggle span{font-size:12px;font-weight:600;color:var(--t3);text-transform:uppercase;letter-spacing:0.5px}
@@ -343,6 +347,7 @@
 </button>
 
 <div id="route-card">
+    <div id="variant-row" style="display:none"></div>
     <div id="stats-row">
         <div class="stat"><span class="stat-v" id="s-dist">—</span><span class="stat-l">Distance</span></div>
         <div class="stat-sep"></div>
@@ -513,6 +518,7 @@ const S = {
     map:null, lightTiles:null, darkTiles:null,
     waypoints:[], markers:[], routeLayer:null, arrowMarkers:[], cafeMarkers:[], currentGeoJSON:null,
     routeCoords:[],
+    altLayers:[], variants:[], activeVariant:0,
     planMode:'direction', selDir:'SE',
     dark: false, sheetExpanded: false, loading: false,
 };
@@ -716,6 +722,7 @@ async function callValhalla(locations, extra = {}) {
             costing_options: { bicycle: { bicycle_type: 'Road', use_roads: useRoads, use_hills: useHills, avoid_bad_surfaces: 1.0 } },
             elevation_interval: 25,
             directions_options: { units: 'km' },
+            alternates: 2,
             ...extra
         };
         const res = await fetch(`${VALHALLA}/route`, {
@@ -725,9 +732,13 @@ async function callValhalla(locations, extra = {}) {
         });
         if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.error || `API ${res.status}`); }
         const data = await res.json();
-        const geojson = valhallaToGeojson(data.trip);
-        S.currentGeoJSON = geojson;
-        showRoute(geojson);
+        // Collect primary + any alternates
+        const trips = [data.trip, ...(data.alternates||[]).map(a=>a.trip||a)].filter(Boolean);
+        const variants = trips.map(t => valhallaToGeojson(t));
+        S.variants = variants;
+        S.activeVariant = 0;
+        S.currentGeoJSON = variants[0];
+        showRoute(variants[0], variants);
     } catch(e) {
         toast('Routing error: ' + e.message);
     } finally {
@@ -764,12 +775,56 @@ function addArrows(coords) {
     }
 }
 
-function showRoute(geojson) {
+function drawVariantLayers(variants, activeIdx) {
+    S.altLayers.forEach(l=>l.remove()); S.altLayers=[];
+    variants.forEach((v,i)=>{
+        if(i===activeIdx) return; // primary drawn separately
+        const l=L.geoJSON(v,{style:{color:'#94a3b8',weight:3,opacity:0.55,lineCap:'round',lineJoin:'round'}}).addTo(S.map);
+        S.altLayers.push(l);
+    });
+}
+
+function buildVariantPills(variants, activeIdx) {
+    const letters=['A','B','C'];
+    return variants.map((v,i)=>{
+        const sum=v.features?.[0]?.properties?.summary;
+        const dist=sum?(sum.distance/1000).toFixed(1)+'km':'?';
+        const coords=v.features?.[0]?.geometry?.coordinates||[];
+        const elev=Math.round(coords.reduce((acc,c,j)=>{
+            if(j===0||c.length<3||coords[j-1].length<3) return acc;
+            const d=c[2]-coords[j-1][2]; return d>0?acc+d:acc;
+        },0));
+        return `<button class="variant-pill${i===activeIdx?' active':''}" data-idx="${i}">${letters[i]} · ${dist} · ${elev}m↑</button>`;
+    }).join('');
+}
+
+function showRoute(geojson, variants) {
     clearRoute(false);
+    // Draw alt routes behind primary
+    const allVariants = variants || S.variants;
+    const activeIdx = allVariants.indexOf(geojson);
+    if(allVariants.length>1) drawVariantLayers(allVariants, activeIdx<0?0:activeIdx);
+
     S.routeLayer = L.geoJSON(geojson, {
         style:{ color:'#10B981', weight:4.5, opacity:0.9, lineCap:'round', lineJoin:'round' }
     }).addTo(S.map);
-    S.map.fitBounds(S.routeLayer.getBounds(), { padding:[60,60] });
+    // Fit bounds to all variants combined
+    if(allVariants.length>1){
+        const bounds=L.latLngBounds([]);
+        allVariants.forEach(v=>{ try{bounds.extend(L.geoJSON(v).getBounds());}catch(e){} });
+        S.map.fitBounds(bounds,{padding:[60,60]});
+    } else {
+        S.map.fitBounds(S.routeLayer.getBounds(), { padding:[60,60] });
+    }
+
+    // Variant pills
+    const vr=document.getElementById('variant-row');
+    if(allVariants.length>1){
+        vr.innerHTML=buildVariantPills(allVariants, activeIdx<0?0:activeIdx);
+        vr.style.display='flex';
+    } else {
+        vr.style.display='none';
+    }
 
     const feat = geojson.features?.[0];
     const sum  = feat?.properties?.summary;
@@ -963,6 +1018,9 @@ function clearRoute(clearLandmark = true) {
     if (S.routeLayer) { S.routeLayer.remove(); S.routeLayer=null; }
     S.arrowMarkers.forEach(m=>m.remove()); S.arrowMarkers=[];
     S.cafeMarkers.forEach(m=>m.remove()); S.cafeMarkers=[];
+    S.altLayers.forEach(l=>l.remove()); S.altLayers=[];
+    S.variants=[]; S.activeVariant=0;
+    document.getElementById('variant-row').style.display='none';
     if (clearLandmark && S_landmarkMarker) { S_landmarkMarker.remove(); S_landmarkMarker=null; }
     S.currentGeoJSON = null;
     S.routeCoords = [];
@@ -1486,6 +1544,16 @@ attachAutocomplete('landmark-input','landmark-autocomplete', r=>{
     showLandmarkPin(parseFloat(r.lon),parseFloat(r.lat));
 });
 
+
+document.getElementById('variant-row').addEventListener('click',e=>{
+    const btn=e.target.closest('.variant-pill');
+    if(!btn||!S.variants.length) return;
+    const idx=parseInt(btn.dataset.idx);
+    if(idx===S.activeVariant) return;
+    S.activeVariant=idx;
+    S.currentGeoJSON=S.variants[idx];
+    showRoute(S.variants[idx], S.variants);
+});
 
 document.getElementById('climbs-toggle').addEventListener('click',()=>{
     document.getElementById('climbs-list').classList.toggle('open');
