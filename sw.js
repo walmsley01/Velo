@@ -1,4 +1,4 @@
-const CACHE = 'bikeplan-v3';
+const CACHE = 'bikeplan-v4';
 const PRECACHE = [
     '/',
     '/index.html',
