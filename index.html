@@ -595,8 +595,7 @@ function clearAll() {
 }
 
 /* ── Valhalla routing (via Stadia Maps) ── */
-const STADIA_KEY = '03324fd6-5e9a-4caf-b8bc-a987a6c53f1c';
-const VALHALLA = `https://valhalla.routing.stadiamaps.com`;
+const VALHALLA = 'https://valhalla1.openstreetmap.de';
 
 function decodePolyline(str) {
     let lat = 0, lng = 0, i = 0;
@@ -652,7 +651,7 @@ async function callValhalla(locations, extra = {}) {
             directions_options: { units: 'km' },
             ...extra
         };
-        const res = await fetch(`${VALHALLA}/route?api_key=${STADIA_KEY}`, {
+        const res = await fetch(`${VALHALLA}/route`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
