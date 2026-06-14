@@ -122,9 +122,11 @@
         .stat-sep{width:0.5px;height:28px;background:var(--border2);flex-shrink:0}
 
         #elev-wrap{padding:0 14px 8px;position:relative}
-        #elev-label{position:absolute;top:2px;font-size:11px;font-weight:600;color:#10B981;transform:translateX(-50%);pointer-events:none;white-space:nowrap;display:none}
+        #elev-label{position:absolute;top:2px;font-size:11px;font-weight:600;color:var(--text);background:var(--surface);border-radius:4px;padding:1px 5px;transform:translateX(-50%);pointer-events:none;white-space:nowrap;display:none;box-shadow:0 1px 4px rgba(0,0,0,0.12)}
         #elev-dot-overlay{position:absolute;width:10px;height:10px;border-radius:50%;background:#10B981;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.3);transform:translate(-50%,-50%);pointer-events:none;display:none}
         .elev-km{position:absolute;bottom:0;font-size:10px;color:var(--t3);transform:translateX(-50%);pointer-events:none}
+        .elev-yl{position:absolute;left:0;font-size:10px;color:var(--t3);pointer-events:none;line-height:1}
+        .grad-pill{font-size:10px;white-space:nowrap}
 
         #card-actions{display:flex;align-items:center;gap:7px;
             padding:10px 12px 14px;border-top:0.5px solid var(--border)}
@@ -797,8 +799,7 @@ function buildElev(coords) {
     const eles = coords.map(c=>c[2]).filter(e=>typeof e==='number');
     if (eles.length < 2) return '';
     const mn=Math.min(...eles), mx=Math.max(...eles), rng=mx-mn||1;
-    const W=100, H=38;
-    const chartH = H;
+    const W=100, H=80;
 
     // Total distance in km from coords (haversine approx)
     let totalKm = 0;
@@ -810,38 +811,51 @@ function buildElev(coords) {
         cumKm.push(totalKm);
     }
 
+    const PAD_T=4, PAD_B=2;
     const xOf = i => (cumKm[i]/totalKm*W).toFixed(2);
-    const yOf = e => (chartH - ((e-mn)/rng)*(chartH-6) - 3).toFixed(2);
+    const yOf = e => (H - PAD_B - ((e-mn)/rng)*(H-PAD_T-PAD_B)).toFixed(2);
 
-    // Gradient-coloured segments
-    const segs = eles.slice(1).map((e,i) => {
-        const hDist = (cumKm[i+1]-cumKm[i])*1000; // metres
+    // Per-segment: gradient-coloured fill rect + line
+    let fills='', lines='';
+    eles.slice(1).forEach((e,i) => {
+        const hDist = (cumKm[i+1]-cumKm[i])*1000;
         const rise  = e - eles[i];
         const grad  = hDist > 0 ? (rise/hDist)*100 : 0;
-        return `<line x1="${xOf(i)}" y1="${yOf(eles[i])}" x2="${xOf(i+1)}" y2="${yOf(e)}"
-            stroke="${gradColor(grad)}" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
-    }).join('');
+        const col   = gradColor(grad);
+        const x1=xOf(i), x2=xOf(i+1);
+        const y1=yOf(eles[i]), y2=yOf(e);
+        const yTop  = Math.min(parseFloat(y1), parseFloat(y2));
+        const yBot  = H - PAD_B;
+        fills += `<rect x="${x1}" y="${yTop.toFixed(2)}" width="${(parseFloat(x2)-parseFloat(x1)).toFixed(2)}" height="${(yBot-yTop).toFixed(2)}" fill="${col}" opacity="0.18"/>`;
+        lines += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="1.8" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
+    });
 
-    // Fill area (subtle, single green)
-    const pts = eles.map((_,i)=>`${xOf(i)},${yOf(eles[i])}`);
-    const area = 'M'+pts.join(' L');
-
-    // km scale labels as HTML (crisp font, no SVG distortion)
+    // km scale labels
     const interval = totalKm<=20?5:totalKm<=60?10:totalKm<=120?20:50;
     let kmLabels='';
     for(let km=interval;km<totalKm;km+=interval){
         kmLabels+=`<span class="elev-km" style="left:${(km/totalKm*100).toFixed(1)}%">${km}km</span>`;
     }
 
-    return `<div id="elev-label"></div><div id="elev-dot-overlay"></div>
+    // y-axis min/max labels — offset right so they don't overlap the line
+    const ylTop  = `<span class="elev-yl" style="top:2px">${Math.round(mx)}m</span>`;
+    const ylBot  = `<span class="elev-yl" style="bottom:20px">${Math.round(mn)}m</span>`;
+
+    return `<div id="elev-label"></div><div id="elev-dot-overlay"></div>${ylTop}${ylBot}
     <svg id="elev-svg" viewBox="0 0 100 ${H}" preserveAspectRatio="none"
-        style="width:100%;height:44px;display:block;cursor:crosshair;touch-action:none">
-        <path d="${area} L${xOf(eles.length-1)},${chartH} L0,${chartH} Z" fill="rgba(16,185,129,0.08)"/>
-        ${segs}
-        <line x1="0" y1="${chartH-1}" x2="100" y2="${chartH-1}" stroke="var(--border)" stroke-width="0.5" vector-effect="non-scaling-stroke"/>
-        <line id="elev-vline" x1="0" y1="0" x2="0" y2="${chartH}" stroke="rgba(0,0,0,0.25)" stroke-width="0.5" opacity="0" vector-effect="non-scaling-stroke"/>
+        style="width:100%;height:100px;display:block;cursor:crosshair;touch-action:none">
+        ${fills}
+        ${lines}
+        <line x1="0" y1="${H-PAD_B}" x2="100" y2="${H-PAD_B}" stroke="var(--border)" stroke-width="0.5" vector-effect="non-scaling-stroke"/>
+        <line id="elev-vline" x1="0" y1="0" x2="0" y2="${H}" stroke="rgba(0,0,0,0.2)" stroke-width="0.5" opacity="0" vector-effect="non-scaling-stroke"/>
     </svg>
-    <div style="position:relative;height:16px">${kmLabels}</div>`;
+    <div style="position:relative;height:16px">${kmLabels}</div>
+    <div style="display:flex;gap:10px;padding:4px 0 2px">
+        <span class="grad-pill" style="color:#10B981">● &lt;3%</span>
+        <span class="grad-pill" style="color:#f59e0b">● 3–6%</span>
+        <span class="grad-pill" style="color:#f97316">● 6–10%</span>
+        <span class="grad-pill" style="color:#ef4444">● 10%+</span>
+    </div>`;
 }
 
 function initElevInteraction(coords) {
@@ -853,7 +867,7 @@ function initElevInteraction(coords) {
     const dot   = document.getElementById('elev-dot-overlay');
     const label = document.getElementById('elev-label');
     const mn=Math.min(...eles), mx=Math.max(...eles), rng=mx-mn||1;
-    const chartH=38;
+    const H=80, PAD_T=4, PAD_B=2;
     let elevMarker = null;
 
     // Cumulative km for x positioning
@@ -869,22 +883,27 @@ function initElevInteraction(coords) {
     function update(clientX) {
         const rect = svg.getBoundingClientRect();
         const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-        // Find coord index closest to this km position
         const targetKm = pct * totalKm;
         let cIdx=0;
         for(let i=1;i<cumKm.length;i++){ if(cumKm[i]<=targetKm) cIdx=i; else break; }
         const eIdx = Math.round(cIdx/(coords.length-1)*(eles.length-1));
-        const ele = eles[Math.min(eIdx,eles.length-1)];
+        const eIdxSafe = Math.min(eIdx, eles.length-1);
+        const ele = eles[eIdxSafe];
+        // Gradient at this point
+        const prevEle = eIdxSafe>0 ? eles[eIdxSafe-1] : ele;
+        const hDist = eIdxSafe>0 ? (cumKm[cIdx]-cumKm[Math.max(0,cIdx-1)])*1000 : 0;
+        const grad = hDist>0 ? ((ele-prevEle)/hDist)*100 : 0;
         const x = (pct*100).toFixed(2);
-        const yPct = ((ele-mn)/rng);
-        const dotTopPct = ((1 - yPct) * (chartH-6) / chartH) * 100;
+        const yPct = (ele-mn)/rng;
+        // dot top as % of the svg element height (100px maps to viewBox H=80)
+        const dotTopPct = ((H - PAD_B - yPct*(H-PAD_T-PAD_B)) / H * 100).toFixed(1);
         vline.setAttribute('x1',x); vline.setAttribute('x2',x); vline.setAttribute('opacity','1');
         dot.style.display='';
         dot.style.left = (pct*100)+'%';
-        dot.style.top = dotTopPct.toFixed(1)+'%';
+        dot.style.top = dotTopPct+'%';
         label.style.display = '';
         label.style.left = (pct*100)+'%';
-        label.textContent = Math.round(ele)+'m';
+        label.textContent = Math.round(ele)+'m' + (Math.abs(grad)>0.5 ? ' · '+Math.round(grad)+'%' : '');
         const c = coords[cIdx];
         if (c && S.map) {
             const ll = [c[1],c[0]];
