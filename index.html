@@ -375,14 +375,13 @@
             </div>
 
             <div class="seg">
-                <button class="seg-opt active" data-plan="direction">Direction</button>
+                <button class="seg-opt active" data-plan="direction">Loop</button>
                 <button class="seg-opt" data-plan="landmark">Landmark</button>
-                <button class="seg-opt" data-plan="loop">Round loop</button>
             </div>
 
             <div id="sub-direction">
                 <div class="field">
-                    <label>Heading</label>
+                    <label>Direction</label>
                     <div class="compass">
                         <button class="dir-btn" data-dir="NW">↖ NW</button>
                         <button class="dir-btn" data-dir="N">↑ N</button>
@@ -397,7 +396,7 @@
                 </div>
                 <div class="col2">
                     <div class="field"><label>Distance (km)</label><input type="number" id="dir-dist" value="50" min="1" max="300"></div>
-                    <div class="field"><label>Route type</label><select id="dir-type"><option value="one-way">One way</option><option value="loop">Out &amp; back</option></select></div>
+                    <div class="field"><label>Route type</label><select id="dir-type"><option value="loop" selected>Out &amp; back loop</option><option value="one-way">One way</option></select></div>
                 </div>
             </div>
 
@@ -407,13 +406,6 @@
                 <div class="field" id="loop-dist-wrap" style="display:none"><label>Target total distance (km)</label><input type="number" id="landmark-loop-dist" value="60" min="1" max="300"></div>
             </div>
 
-            <div id="sub-loop" style="display:none">
-                <div class="col2">
-                    <div class="field"><label>Distance (km)</label><input type="number" id="loop-dist" value="60" min="5" max="300"></div>
-                    <div class="field"><label>Variation (0–5)</label><input type="number" id="loop-seed" value="0" min="0" max="5"></div>
-                </div>
-                <p style="font-size:12px;color:var(--t3);margin-bottom:10px">Change variation to get different loop shapes from the same start.</p>
-            </div>
 
             <button class="btn btn-primary" id="generate-btn">Generate route</button>
         </div>
@@ -806,28 +798,27 @@ async function generateRoute() {
     const sc = await geocode(txt);
     if (!sc) { setLoading(false); return; }
 
-    if (S.planMode==='loop') {
-        const km = parseFloat(document.getElementById('loop-dist').value)||60;
-        const seed = parseInt(document.getElementById('loop-seed').value)||0;
-        const r = (km / (2 * Math.PI)) * 1000;
-        const baseAngle = (seed * 37) % 360;
-        const pts = [0, 1, 2, 3].map(i =>
-            dest(sc[1], sc[0], (baseAngle + i * 90) % 360, r * 0.85)
-        );
-        // mark intermediate pts as "through" so Valhalla won't U-turn at them
-        await callValhalla([sc, [...pts[0],'through'], [...pts[1],'through'], [...pts[2],'through'], [...pts[3],'through'], sc]);
-    } else if (S.planMode==='direction') {
+    if (S.planMode==='direction') {
         const km = parseFloat(document.getElementById('dir-dist').value)||50;
         const loop = document.getElementById('dir-type').value==='loop';
         const bear = DIR[S.selDir];
-        const end = dest(sc[1], sc[0], bear, km * 1000);
+        const distM = km * 1000;
         if (loop) {
-            // offset the return leg 90° to the right of the bearing
-            const mid = dest(sc[1], sc[0], bear, km * 500);
-            const ret = dest(mid[1], mid[0], (bear + 90) % 360, km * 200);
-            await callValhalla([sc, [...end,'through'], [...ret,'through'], sc]);
+            // Ride out to turnaround, return via roads offset sideways
+            const turnaround = dest(sc[1], sc[0], bear, distM * 0.48);
+            // perpendicular offset on both sides to encourage parallel return roads
+            const offsetM = Math.max(2000, distM * 0.12);
+            const pOut = dest(sc[1], sc[0], (bear + 90) % 360, offsetM);
+            const pRet = dest(turnaround[1], turnaround[0], (bear + 270) % 360, offsetM);
+            await callValhalla([
+                sc,
+                [...pOut, 'through'],
+                turnaround,
+                [...pRet, 'through'],
+                sc
+            ]);
         } else {
-            await callValhalla([sc, end]);
+            await callValhalla([sc, dest(sc[1], sc[0], bear, distM)]);
         }
     } else {
         const lmt = document.getElementById('landmark-input').value.trim();
@@ -941,7 +932,6 @@ document.querySelectorAll('.seg-opt').forEach(b=>b.addEventListener('click',()=>
     S.planMode=b.dataset.plan;
     document.getElementById('sub-direction').style.display=S.planMode==='direction'?'':'none';
     document.getElementById('sub-landmark').style.display=S.planMode==='landmark'?'':'none';
-    document.getElementById('sub-loop').style.display=S.planMode==='loop'?'':'none';
 }));
 
 document.querySelectorAll('.dir-btn[data-dir]').forEach(b=>b.addEventListener('click',()=>{
